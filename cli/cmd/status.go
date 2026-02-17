@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hiddenlayer/apim-cli/internal/azure"
-	"github.com/hiddenlayer/apim-cli/internal/policy"
+	"github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/internal/azure"
+	"github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/internal/policy"
 )
 
 var statusPackage string

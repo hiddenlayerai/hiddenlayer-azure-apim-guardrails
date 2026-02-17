@@ -6,7 +6,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/hiddenlayer/apim-cli/internal/config"
+	"github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/internal/config"
 )
 
 var (

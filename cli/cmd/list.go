@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hiddenlayer/apim-cli/internal/azure"
+	"github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/internal/azure"
 )
 
 var listCmd = &cobra.Command{

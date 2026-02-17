@@ -1,4 +1,4 @@
-module github.com/hiddenlayer/apim-cli
+module github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli
 
 go 1.24.3
 

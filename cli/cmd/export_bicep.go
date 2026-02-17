@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hiddenlayer/apim-cli/internal/policy"
+	"github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/internal/policy"
 )
 
 var (

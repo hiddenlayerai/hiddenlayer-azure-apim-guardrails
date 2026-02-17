@@ -25,24 +25,51 @@ func SelectPackage(flagValue string, r io.Reader, w io.Writer) (*Package, error)
 		return LoadPackage(names[0])
 	}
 
-	fmt.Fprintln(w, "Available fragment packages:")
+	entries := make([]menuEntry, len(names))
 	for i, name := range names {
 		m, err := LoadPackageManifest(name)
 		if err != nil {
-			fmt.Fprintf(w, "  %d) %s\n", i+1, name)
+			entries[i] = menuEntry{Name: name}
 		} else {
-			versionSuffix := ""
-			if m.Version != "" {
-				versionSuffix = "@" + m.Version
-			}
-			fmt.Fprintf(w, "  %d) %s%s - %s\n", i+1, name, versionSuffix, m.Description)
+			entries[i] = menuEntry{Name: name, Version: m.Version, Desc: m.Description}
+		}
+	}
+
+	selected, err := selectFromMenu(entries, r, w)
+	if err != nil {
+		return nil, err
+	}
+	return LoadPackage(selected)
+}
+
+type menuEntry struct {
+	Name    string
+	Version string
+	Desc    string
+}
+
+func selectFromMenu(entries []menuEntry, r io.Reader, w io.Writer) (string, error) {
+	if len(entries) == 0 {
+		return "", fmt.Errorf("no entries to select from")
+	}
+
+	fmt.Fprintln(w, "Available fragment packages:")
+	for i, e := range entries {
+		versionSuffix := ""
+		if e.Version != "" {
+			versionSuffix = "@" + e.Version
+		}
+		if e.Desc != "" {
+			fmt.Fprintf(w, "  %d) %s%s - %s\n", i+1, e.Name, versionSuffix, e.Desc)
+		} else {
+			fmt.Fprintf(w, "  %d) %s%s\n", i+1, e.Name, versionSuffix)
 		}
 	}
 	fmt.Fprint(w, "Select package [1]: ")
 
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {
-		return nil, fmt.Errorf("no input received")
+		return "", fmt.Errorf("no input received")
 	}
 	input := strings.TrimSpace(scanner.Text())
 	if input == "" {
@@ -50,11 +77,11 @@ func SelectPackage(flagValue string, r io.Reader, w io.Writer) (*Package, error)
 	}
 
 	choice, err := strconv.Atoi(input)
-	if err != nil || choice < 1 || choice > len(names) {
-		return nil, fmt.Errorf("invalid selection: %q", input)
+	if err != nil || choice < 1 || choice > len(entries) {
+		return "", fmt.Errorf("invalid selection: %q", input)
 	}
 
-	return LoadPackage(names[choice-1])
+	return entries[choice-1].Name, nil
 }
 
 func SelectPackageStdin(flagValue string) (*Package, error) {

@@ -2,6 +2,9 @@ package policy
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -10,18 +13,19 @@ func TestListPackages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPackages() error = %v", err)
 	}
-	if len(names) < 2 {
-		t.Fatalf("expected at least 2 packages (v1-interactions, test-fixture), got %d: %v", len(names), names)
+	if len(names) < 1 {
+		t.Fatalf("expected at least 1 package, got %d: %v", len(names), names)
 	}
 
 	found := map[string]bool{}
 	for _, n := range names {
 		found[n] = true
 	}
-	for _, want := range []string{"v1-interactions", "test-fixture"} {
-		if !found[want] {
-			t.Errorf("ListPackages() missing %q, got %v", want, names)
-		}
+	if !found["v1-interactions"] {
+		t.Errorf("ListPackages() missing %q, got %v", "v1-interactions", names)
+	}
+	if found["test-fixture"] {
+		t.Errorf("ListPackages() should not contain test-fixture; test fixtures belong in testdata/")
 	}
 }
 
@@ -42,18 +46,50 @@ func TestLoadPackage_V1Interactions(t *testing.T) {
 }
 
 func TestLoadPackage_TestFixture(t *testing.T) {
-	pkg, err := LoadPackage("test-fixture")
+	// Load the test fixture from testdata/ (not the embedded FS) to verify
+	// manifest parsing and fragment loading without shipping test data in the binary.
+	fixtureDir := filepath.Join("testdata", "test-fixture")
+
+	data, err := os.ReadFile(filepath.Join(fixtureDir, "package.json"))
 	if err != nil {
-		t.Fatalf("LoadPackage() error = %v", err)
+		t.Fatalf("reading test fixture manifest: %v", err)
 	}
-	if pkg.Manifest.Name != "test-fixture" {
-		t.Errorf("Manifest.Name = %q, want %q", pkg.Manifest.Name, "test-fixture")
+	var manifest PackageManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("parsing test fixture manifest: %v", err)
 	}
-	if pkg.Manifest.Version != "0.0.1" {
-		t.Errorf("Manifest.Version = %q, want %q", pkg.Manifest.Version, "0.0.1")
+	if manifest.Name != "test-fixture" {
+		t.Errorf("Manifest.Name = %q, want %q", manifest.Name, "test-fixture")
 	}
-	if len(pkg.Fragments) != 1 {
-		t.Errorf("expected 1 fragment, got %d", len(pkg.Fragments))
+	if manifest.Version != "0.0.1" {
+		t.Errorf("Manifest.Version = %q, want %q", manifest.Version, "0.0.1")
+	}
+	if len(manifest.Inbound) != 1 {
+		t.Errorf("expected 1 inbound fragment, got %d", len(manifest.Inbound))
+	}
+
+	// Load fragments from the fixture directory.
+	entries, err := os.ReadDir(fixtureDir)
+	if err != nil {
+		t.Fatalf("reading fixture directory: %v", err)
+	}
+	var fragments []Fragment
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".xml") {
+			continue
+		}
+		xmlData, err := os.ReadFile(filepath.Join(fixtureDir, e.Name()))
+		if err != nil {
+			t.Fatalf("reading fragment %q: %v", e.Name(), err)
+		}
+		id := strings.TrimSuffix(e.Name(), ".xml")
+		fragments = append(fragments, Fragment{ID: id, XML: string(xmlData)})
+	}
+	if len(fragments) != 1 {
+		t.Errorf("expected 1 fragment file, got %d", len(fragments))
+	}
+	if fragments[0].ID != "hl-test-fragment" {
+		t.Errorf("fragment ID = %q, want %q", fragments[0].ID, "hl-test-fragment")
 	}
 }
 

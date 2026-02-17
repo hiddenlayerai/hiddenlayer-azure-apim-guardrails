@@ -13,9 +13,9 @@ VERSION ?= $(shell \
 	fi \
 )
 
-LDFLAGS := -ldflags "-X github.com/hiddenlayer/apim-cli/cmd.Version=$(VERSION) \
-	-X github.com/hiddenlayer/apim-cli/cmd.GitCommit=$(GIT_COMMIT) \
-	-X github.com/hiddenlayer/apim-cli/cmd.BuildDate=$(BUILD_DATE)"
+LDFLAGS := -ldflags "-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=$(VERSION) \
+	-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.GitCommit=$(GIT_COMMIT) \
+	-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.BuildDate=$(BUILD_DATE)"
 
 .PHONY: build clean install test lint all
 

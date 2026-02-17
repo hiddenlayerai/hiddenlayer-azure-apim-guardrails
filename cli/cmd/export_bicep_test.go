@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hiddenlayer/apim-cli/internal/policy"
+	"github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/internal/policy"
 )
 
 func resetExportBicepFlags() {

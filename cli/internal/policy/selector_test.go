@@ -23,20 +23,22 @@ func TestSelectPackage_InvalidFlag(t *testing.T) {
 	}
 }
 
-func TestSelectPackage_InteractiveMenu(t *testing.T) {
-	// Simulate selecting option 1 from the menu
+func TestSelectFromMenu_ValidChoice(t *testing.T) {
+	entries := []menuEntry{
+		{Name: "pkg-a", Version: "1.0.0", Desc: "Package A"},
+		{Name: "pkg-b", Version: "2.0.0", Desc: "Package B"},
+	}
 	input := strings.NewReader("1\n")
 	var output bytes.Buffer
 
-	pkg, err := SelectPackage("", input, &output)
+	name, err := selectFromMenu(entries, input, &output)
 	if err != nil {
-		t.Fatalf("SelectPackage() error = %v", err)
+		t.Fatalf("selectFromMenu() error = %v", err)
 	}
-	if pkg == nil {
-		t.Fatal("SelectPackage() returned nil package")
+	if name != "pkg-a" {
+		t.Errorf("expected %q, got %q", "pkg-a", name)
 	}
 
-	// Verify menu was displayed
 	out := output.String()
 	if !strings.Contains(out, "Available fragment packages") {
 		t.Error("expected menu header in output")
@@ -46,8 +48,42 @@ func TestSelectPackage_InteractiveMenu(t *testing.T) {
 	}
 }
 
+func TestSelectFromMenu_SecondChoice(t *testing.T) {
+	entries := []menuEntry{
+		{Name: "pkg-a", Version: "1.0.0", Desc: "Package A"},
+		{Name: "pkg-b", Version: "2.0.0", Desc: "Package B"},
+	}
+	input := strings.NewReader("2\n")
+	var output bytes.Buffer
+
+	name, err := selectFromMenu(entries, input, &output)
+	if err != nil {
+		t.Fatalf("selectFromMenu() error = %v", err)
+	}
+	if name != "pkg-b" {
+		t.Errorf("expected %q, got %q", "pkg-b", name)
+	}
+}
+
+func TestSelectFromMenu_DefaultSelection(t *testing.T) {
+	entries := []menuEntry{
+		{Name: "pkg-a", Version: "1.0.0", Desc: "Package A"},
+		{Name: "pkg-b", Version: "2.0.0", Desc: "Package B"},
+	}
+	input := strings.NewReader("\n")
+	var output bytes.Buffer
+
+	name, err := selectFromMenu(entries, input, &output)
+	if err != nil {
+		t.Fatalf("selectFromMenu() error = %v", err)
+	}
+	if name != "pkg-a" {
+		t.Errorf("expected default %q, got %q", "pkg-a", name)
+	}
+}
+
 func TestSelectPackage_InteractiveDefaultSelection(t *testing.T) {
-	// Empty input should default to "1"
+	// With a single embedded package, SelectPackage auto-selects it.
 	input := strings.NewReader("\n")
 	var output bytes.Buffer
 
@@ -60,22 +96,28 @@ func TestSelectPackage_InteractiveDefaultSelection(t *testing.T) {
 	}
 }
 
-func TestSelectPackage_InvalidInput(t *testing.T) {
+func TestSelectFromMenu_InvalidInput(t *testing.T) {
+	entries := []menuEntry{
+		{Name: "pkg-a", Version: "1.0.0", Desc: "Package A"},
+	}
 	input := strings.NewReader("abc\n")
 	var output bytes.Buffer
 
-	_, err := SelectPackage("", input, &output)
+	_, err := selectFromMenu(entries, input, &output)
 	if err == nil {
-		t.Error("SelectPackage() expected error for invalid input")
+		t.Error("selectFromMenu() expected error for invalid input")
 	}
 }
 
-func TestSelectPackage_OutOfRange(t *testing.T) {
+func TestSelectFromMenu_OutOfRange(t *testing.T) {
+	entries := []menuEntry{
+		{Name: "pkg-a", Version: "1.0.0", Desc: "Package A"},
+	}
 	input := strings.NewReader("999\n")
 	var output bytes.Buffer
 
-	_, err := SelectPackage("", input, &output)
+	_, err := selectFromMenu(entries, input, &output)
 	if err == nil {
-		t.Error("SelectPackage() expected error for out-of-range selection")
+		t.Error("selectFromMenu() expected error for out-of-range selection")
 	}
 }

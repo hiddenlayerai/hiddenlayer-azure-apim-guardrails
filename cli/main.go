@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/hiddenlayer/apim-cli/cmd"
+	"github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd"
 )
 
 func main() {
