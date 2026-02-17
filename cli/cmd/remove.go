@@ -33,14 +33,13 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Determine target API
 	var apiID string
 	if len(args) > 0 {
 		apiID = args[0]
 	} else if cfg.TargetAPI != "" {
 		apiID = cfg.TargetAPI
 	} else {
-		return fmt.Errorf("no API specified\n\nUsage: hiddenlayer-apim remove <api-id>\n\nOr set HL_TARGET_API in your configuration")
+		return fmt.Errorf("no API specified\n\nUsage: hiddenlayer-apim remove <api-id>\n\nOr set HL_TARGET_API")
 	}
 
 	printHeader("Removing HiddenLayer Policy")
@@ -48,13 +47,11 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Target API:    %s\n", apiID)
 	fmt.Println()
 
-	// Create Azure client
 	client, err := azure.NewClient(cfg.SubscriptionID, cfg.ResourceGroup, cfg.APIMName, verbose)
 	if err != nil {
 		return err
 	}
 
-	// Verify API exists
 	printInfo("Verifying API exists...")
 	api, err := client.GetAPI(apiID)
 	if err != nil {
@@ -62,14 +59,12 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 	printSuccess("Found API: %s (%s)", api.DisplayName, api.Name)
 
-	// Get existing policy
 	printInfo("Reading existing policy...")
 	existingPolicy, err := client.GetAPIPolicy(apiID)
 	if err != nil {
 		return fmt.Errorf("failed to read existing policy: %w", err)
 	}
 
-	// Resolve removal strategy
 	pkgFlag := removePackage
 	if pkgFlag == "" {
 		pkgFlag = cfg.HLPackage
@@ -77,7 +72,6 @@ func runRemove(cmd *cobra.Command, args []string) error {
 
 	var newPolicy string
 	if pkgFlag != "" {
-		// Package specified: use package-aware removal
 		pkg, err := policy.LoadPackage(pkgFlag)
 		if err != nil {
 			return fmt.Errorf("package load: %w", err)
@@ -91,7 +85,6 @@ func runRemove(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	} else {
-		// No package: detect hl-* fragments automatically
 		detectedIDs := policy.DetectHiddenLayerFragmentIDs(existingPolicy)
 		if len(detectedIDs) == 0 {
 			printWarning("No HiddenLayer fragments found in policy")
@@ -104,7 +97,6 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Apply updated policy
 	printInfo("Removing HiddenLayer fragments...")
 	if err := client.SetAPIPolicy(apiID, newPolicy); err != nil {
 		return err

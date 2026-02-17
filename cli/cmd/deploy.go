@@ -33,7 +33,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Resolve package
 	pkgFlag := deployPackage
 	if pkgFlag == "" {
 		pkgFlag = cfg.HLPackage
@@ -53,7 +52,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Package:        %s\n", packageLabel)
 	fmt.Println()
 
-	// Create Azure client
 	printInfo("Connecting to Azure...")
 	client, err := azure.NewClient(cfg.SubscriptionID, cfg.ResourceGroup, cfg.APIMName, verbose)
 	if err != nil {
@@ -61,7 +59,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	}
 	printSuccess("Connected to Azure")
 
-	// Deploy named values
 	printInfo("Deploying named values...")
 
 	namedValues := []struct {
@@ -87,7 +84,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Deploy policy fragments
 	printInfo("Deploying policy fragments...")
 
 	for _, frag := range pkg.Fragments {

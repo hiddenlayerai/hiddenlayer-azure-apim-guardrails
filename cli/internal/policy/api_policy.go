@@ -5,8 +5,6 @@ import (
 	"strings"
 )
 
-// BuildHiddenLayerPolicy generates the default policy XML that includes all
-// fragments from the given package.
 func BuildHiddenLayerPolicy(pkg *Package) string {
 	var b strings.Builder
 	b.WriteString("<policies>\n")
@@ -36,7 +34,6 @@ func BuildHiddenLayerPolicy(pkg *Package) string {
 	return b.String()
 }
 
-// BasePolicy returns a minimal policy without HiddenLayer
 const BasePolicy = `<policies>
     <inbound>
         <base />

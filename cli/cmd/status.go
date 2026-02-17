@@ -39,7 +39,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Resolve package
 	pkgFlag := statusPackage
 	if pkgFlag == "" {
 		pkgFlag = cfg.HLPackage
@@ -61,7 +60,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	allOk := true
 
-	// Check Azure connectivity
 	printInfo("Checking Azure connectivity...")
 	client, err := azure.NewClient(cfg.SubscriptionID, cfg.ResourceGroup, cfg.APIMName, verbose)
 	if err != nil {
@@ -70,7 +68,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 	printSuccess("Connected to Azure")
 
-	// Check HiddenLayer credentials
 	printInfo("Checking HiddenLayer credentials...")
 	if cfg.HLClientID == "" || cfg.HLClientSecret == "" || cfg.HLProjectID == "" {
 		printWarning("HiddenLayer credentials not fully configured")
@@ -85,7 +82,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 		allOk = false
 	} else {
-		// Test HiddenLayer auth
 		if token, err := testHiddenLayerAuth(cfg.HLHost, cfg.HLClientID, cfg.HLClientSecret); err != nil {
 			printError("HiddenLayer auth failed: %v", err)
 			allOk = false
@@ -94,7 +90,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check named values
 	printInfo("Checking APIM named values...")
 	namedValues := []string{"hl-client-id", "hl-client-secret", "hl-project-id", "hl-host"}
 	for _, nv := range namedValues {
@@ -110,7 +105,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check policy fragments
 	printInfo("Checking policy fragments...")
 	fragmentsOk := true
 	for _, frag := range pkg.Fragments {
@@ -128,7 +122,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Check which APIs have HiddenLayer applied (only if fragments exist)
 	if fragmentsOk {
 		printInfo("Checking API policies...")
 		apis, err := client.ListAPIs()
@@ -167,7 +160,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Summary
 	printHeader("Summary")
 	if allOk {
 		printSuccess("All checks passed!")
@@ -185,7 +177,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// testHiddenLayerAuth tests HiddenLayer OAuth credentials
 func testHiddenLayerAuth(host, clientID, clientSecret string) (string, error) {
 	data := url.Values{}
 	data.Set("grant_type", "client_credentials")

@@ -36,17 +36,15 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Determine target API
 	var apiID string
 	if len(args) > 0 {
 		apiID = args[0]
 	} else if cfg.TargetAPI != "" {
 		apiID = cfg.TargetAPI
 	} else {
-		return fmt.Errorf("no API specified\n\nUsage: hiddenlayer-apim apply <api-id>\n\nOr set HL_TARGET_API in your configuration")
+		return fmt.Errorf("no API specified\n\nUsage: hiddenlayer-apim apply <api-id>\n\nOr set HL_TARGET_API")
 	}
 
-	// Resolve package
 	pkgFlag := applyPackage
 	if pkgFlag == "" {
 		pkgFlag = cfg.HLPackage
@@ -67,13 +65,11 @@ func runApply(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Dry Run:       %v\n", applyDryRun)
 	fmt.Println()
 
-	// Create Azure client
 	client, err := azure.NewClient(cfg.SubscriptionID, cfg.ResourceGroup, cfg.APIMName, verbose)
 	if err != nil {
 		return err
 	}
 
-	// Verify API exists
 	printInfo("Verifying API exists...")
 	api, err := client.GetAPI(apiID)
 	if err != nil {
@@ -81,7 +77,6 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 	printSuccess("Found API: %s (%s)", api.DisplayName, api.Name)
 
-	// Verify fragments exist
 	printInfo("Verifying policy fragments...")
 	for _, frag := range pkg.Fragments {
 		exists, err := waitForPolicyFragment(client, frag.ID, 5, 2*time.Second)
@@ -94,7 +89,6 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 	printSuccess("All policy fragments found")
 
-	// Get existing policy
 	printInfo("Reading existing policy...")
 	existingPolicy, err := client.GetAPIPolicy(apiID)
 	if err != nil {
@@ -104,20 +98,17 @@ func runApply(cmd *cobra.Command, args []string) error {
 		existingPolicy = policy.BasePolicy
 	}
 
-	// Check if already applied
 	if policy.HasHiddenLayerFragments(existingPolicy, pkg) {
 		printWarning("HiddenLayer fragments already present in policy")
 		printInfo("Use 'remove' first if you want to re-apply")
 		return nil
 	}
 
-	// Inject HiddenLayer fragments
 	newPolicy, err := policy.InjectHiddenLayerFragments(existingPolicy, pkg)
 	if err != nil {
 		return err
 	}
 
-	// Show policy in dry-run mode
 	if applyDryRun {
 		printHeader("Policy Preview (Dry Run)")
 		fmt.Println(newPolicy)
@@ -126,7 +117,6 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Apply policy
 	printInfo("Injecting HiddenLayer fragments...")
 	if err := client.SetAPIPolicy(apiID, newPolicy); err != nil {
 		return err
@@ -136,17 +126,11 @@ func runApply(cmd *cobra.Command, args []string) error {
 	printHeader("Complete")
 	fmt.Printf("API '%s' is now protected by HiddenLayer.\n", apiID)
 	fmt.Println()
-	fmt.Println("The policy will:")
-	fmt.Println("  • Evaluate inbound requests (block/redact threats)")
-	fmt.Println("  • Evaluate outbound responses (block/redact sensitive data)")
-	fmt.Println("  • Pass through original payloads when allowed")
-	fmt.Println()
 
-	// Print test curl command
 	printHeader("Test Command")
 	gatewayURL, err := client.GetGatewayURL()
 	if err != nil {
-		gatewayURL = fmt.Sprintf("https://%s.azure-api.net", cfg.APIMName) // fallback
+		gatewayURL = fmt.Sprintf("https://%s.azure-api.net", cfg.APIMName)
 	}
 	gatewayURL = fmt.Sprintf("%s/%s", gatewayURL, api.Path)
 	fmt.Println("Test your API with this curl command:")
@@ -171,7 +155,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 }
 
 func waitForPolicyFragment(client *azure.Client, fragmentID string, attempts int, delay time.Duration) (bool, error) {
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		exists, err := client.GetPolicyFragment(fragmentID)
 		if err != nil {
 			return false, err

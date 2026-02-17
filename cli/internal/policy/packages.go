@@ -25,10 +25,9 @@ type PackageManifest struct {
 type Package struct {
 	Manifest  PackageManifest
 	Fragments []Fragment
-	fragMap   map[string]string // ID -> XML
+	fragMap   map[string]string
 }
 
-// AllFragmentIDs returns the union of inbound and outbound fragment IDs.
 func (p *Package) AllFragmentIDs() []string {
 	seen := make(map[string]bool)
 	var ids []string
@@ -47,23 +46,19 @@ func (p *Package) AllFragmentIDs() []string {
 	return ids
 }
 
-// InboundIDs returns the inbound fragment IDs declared in the manifest.
 func (p *Package) InboundIDs() []string {
 	return p.Manifest.Inbound
 }
 
-// OutboundIDs returns the outbound fragment IDs declared in the manifest.
 func (p *Package) OutboundIDs() []string {
 	return p.Manifest.Outbound
 }
 
-// GetFragmentXML returns the XML content for a given fragment ID.
 func (p *Package) GetFragmentXML(id string) (string, bool) {
 	xml, ok := p.fragMap[id]
 	return xml, ok
 }
 
-// FragmentDescription returns an APIM-visible description for a fragment.
 func (p *Package) FragmentDescription(id string) string {
 	if strings.TrimSpace(p.Manifest.Version) != "" {
 		return fmt.Sprintf("HiddenLayer %s@%s fragment %s", p.Manifest.Name, p.Manifest.Version, id)
@@ -71,7 +66,6 @@ func (p *Package) FragmentDescription(id string) string {
 	return fmt.Sprintf("HiddenLayer %s fragment %s", p.Manifest.Name, id)
 }
 
-// ListPackages returns the names of all available embedded packages.
 func ListPackages() ([]string, error) {
 	entries, err := fs.ReadDir(packagesFS, "packages")
 	if err != nil {
@@ -82,7 +76,6 @@ func ListPackages() ([]string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		// Only include directories that contain a package.json
 		_, err := fs.Stat(packagesFS, path.Join("packages", e.Name(), "package.json"))
 		if err == nil {
 			names = append(names, e.Name())
@@ -91,7 +84,6 @@ func ListPackages() ([]string, error) {
 	return names, nil
 }
 
-// LoadPackage loads a package by name from the embedded filesystem.
 func LoadPackage(name string) (*Package, error) {
 	manifest, err := LoadPackageManifest(name)
 	if err != nil {
@@ -126,7 +118,6 @@ func LoadPackage(name string) (*Package, error) {
 	return pkg, nil
 }
 
-// LoadPackageManifest loads only the manifest for a package.
 func LoadPackageManifest(name string) (*PackageManifest, error) {
 	data, err := fs.ReadFile(packagesFS, path.Join("packages", name, "package.json"))
 	if err != nil {

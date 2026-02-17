@@ -8,7 +8,6 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Config holds the application configuration
 type Config struct {
 	// Azure configuration
 	ResourceGroup  string
@@ -21,12 +20,10 @@ type Config struct {
 	HLProjectID    string
 	HLHost         string
 
-	// Optional
 	TargetAPI string
 	HLPackage string
 }
 
-// Load reads configuration from default .env locations and environment variables
 func Load() (*Config, error) {
 	envPaths := []string{
 		".env",
@@ -35,7 +32,6 @@ func Load() (*Config, error) {
 
 	for _, path := range envPaths {
 		if _, err := os.Stat(path); err == nil {
-			// Load .env file (doesn't override existing env vars)
 			_ = godotenv.Load(path)
 			break
 		}
@@ -46,7 +42,6 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// LoadFrom reads configuration from a specific .env file path
 func LoadFrom(path string) (*Config, error) {
 	if path == "" {
 		return Load()
@@ -56,7 +51,6 @@ func LoadFrom(path string) (*Config, error) {
 		return nil, fmt.Errorf("config file not found: %s", path)
 	}
 
-	// Use Overload so an explicit --config wins over exported env vars
 	if err := godotenv.Overload(path); err != nil {
 		return nil, fmt.Errorf("failed to load config file: %w", err)
 	}
@@ -80,14 +74,12 @@ func buildConfigFromEnv() *Config {
 	}
 }
 
-// normalizeConfig fills defaults
 func (c *Config) normalizeConfig() {
 	if c.HLHost == "" {
 		c.HLHost = "hiddenlayer.ai"
 	}
 }
 
-// Validate checks that required configuration is present
 func (c *Config) Validate() error {
 	if c.ResourceGroup == "" {
 		return fmt.Errorf("resource_group (RG) is required")
@@ -98,7 +90,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// ValidateHLCredentials checks that HiddenLayer credentials are configured
 func (c *Config) ValidateHLCredentials() error {
 	if err := c.Validate(); err != nil {
 		return err

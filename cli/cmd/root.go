@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -15,7 +14,6 @@ var (
 	cfg     *config.Config
 	verbose bool
 
-	// Colors for output
 	green  = color.New(color.FgGreen).SprintFunc()
 	red    = color.New(color.FgRed).SprintFunc()
 	yellow = color.New(color.FgYellow).SprintFunc()
@@ -23,7 +21,6 @@ var (
 	bold   = color.New(color.Bold).SprintFunc()
 )
 
-// rootCmd represents the base command
 var rootCmd = &cobra.Command{
 	Use:   "hiddenlayer-apim",
 	Short: "HiddenLayer APIM Integration CLI",
@@ -35,12 +32,7 @@ This CLI helps you:
   • Apply security scanning to specific APIs
   • Monitor and debug the integration`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Skip config loading for init command
-		if cmd.Name() == "init" || cmd.Name() == "version" {
-			return nil
-		}
-		// Export commands are local filesystem operations and do not need runtime config.
-		if cmd.Name() == "export" || cmd.Name() == "bicep" {
+		if cmd.Name() == "init" || cmd.Name() == "version" || cmd.Name() == "export" || cmd.Name() == "bicep" {
 			return nil
 		}
 
@@ -53,7 +45,6 @@ This CLI helps you:
 	},
 }
 
-// Execute runs the root command
 func Execute() error {
 	return rootCmd.Execute()
 }
@@ -63,20 +54,19 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 }
 
-// Helper functions for consistent output
-func printSuccess(format string, a ...interface{}) {
+func printSuccess(format string, a ...any) {
 	fmt.Printf("%s %s\n", green("✓"), fmt.Sprintf(format, a...))
 }
 
-func printError(format string, a ...interface{}) {
+func printError(format string, a ...any) {
 	fmt.Printf("%s %s\n", red("✗"), fmt.Sprintf(format, a...))
 }
 
-func printWarning(format string, a ...interface{}) {
+func printWarning(format string, a ...any) {
 	fmt.Printf("%s %s\n", yellow("!"), fmt.Sprintf(format, a...))
 }
 
-func printInfo(format string, a ...interface{}) {
+func printInfo(format string, a ...any) {
 	fmt.Printf("%s %s\n", cyan("→"), fmt.Sprintf(format, a...))
 }
 
@@ -84,11 +74,4 @@ func printHeader(title string) {
 	fmt.Println()
 	fmt.Println(bold(title))
 	fmt.Println(bold("─────────────────────────────────────────"))
-}
-
-func exitOnError(err error) {
-	if err != nil {
-		printError("%v", err)
-		os.Exit(1)
-	}
 }

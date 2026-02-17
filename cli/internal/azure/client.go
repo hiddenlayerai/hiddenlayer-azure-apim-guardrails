@@ -16,7 +16,6 @@ const (
 	baseURL    = "https://management.azure.com"
 )
 
-// Client handles Azure APIM operations
 type Client struct {
 	subscriptionID string
 	resourceGroup  string
@@ -26,14 +25,12 @@ type Client struct {
 	verbose        bool
 }
 
-// NewClient creates a new Azure client
 func NewClient(subscriptionID, resourceGroup, apimName string, verbose bool) (*Client, error) {
 	token, err := getAccessToken()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Azure access token: %w\nRun 'az login' first", err)
 	}
 
-	// If subscription ID not provided, get it from Azure CLI
 	if subscriptionID == "" {
 		subscriptionID, err = getSubscriptionID()
 		if err != nil {
@@ -53,7 +50,6 @@ func NewClient(subscriptionID, resourceGroup, apimName string, verbose bool) (*C
 	}, nil
 }
 
-// getAccessToken retrieves an access token using Azure CLI
 func getAccessToken() (string, error) {
 	cmd := exec.Command("az", "account", "get-access-token", "--query", "accessToken", "-o", "tsv")
 	output, err := cmd.Output()
@@ -63,7 +59,6 @@ func getAccessToken() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-// getSubscriptionID retrieves the current subscription ID using Azure CLI
 func getSubscriptionID() (string, error) {
 	cmd := exec.Command("az", "account", "show", "--query", "id", "-o", "tsv")
 	output, err := cmd.Output()
@@ -73,13 +68,12 @@ func getSubscriptionID() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-// request makes an HTTP request to Azure REST API
-func (c *Client) request(method, path string, body interface{}) ([]byte, int, error) {
+func (c *Client) request(method, path string, body any) ([]byte, int, error) {
 	respBody, status, _, err := c.requestWithHeaders(method, path, body)
 	return respBody, status, err
 }
 
-func (c *Client) requestWithHeaders(method, path string, body interface{}) ([]byte, int, http.Header, error) {
+func (c *Client) requestWithHeaders(method, path string, body any) ([]byte, int, http.Header, error) {
 	url := fmt.Sprintf("%s%s?api-version=%s", baseURL, path, apiVersion)
 
 	var bodyReader io.Reader
@@ -129,13 +123,11 @@ func (c *Client) logResponse(method, url string, status int, headers http.Header
 	fmt.Printf("[azure] response: %s\n", string(body))
 }
 
-// apimPath builds a path to an APIM resource
 func (c *Client) apimPath(resource string) string {
 	return fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.ApiManagement/service/%s%s",
 		c.subscriptionID, c.resourceGroup, c.apimName, resource)
 }
 
-// API represents an APIM API
 type API struct {
 	ID                   string `json:"id"`
 	Name                 string `json:"name"`
@@ -145,7 +137,6 @@ type API struct {
 	SubscriptionRequired bool   `json:"subscriptionRequired"`
 }
 
-// ListAPIs returns all APIs in the APIM instance
 func (c *Client) ListAPIs() ([]API, error) {
 	body, status, err := c.request("GET", c.apimPath("/apis"), nil)
 	if err != nil {
@@ -173,7 +164,6 @@ func (c *Client) ListAPIs() ([]API, error) {
 
 	apis := make([]API, len(result.Value))
 	for i, v := range result.Value {
-		// Extract just the API ID from the full resource name
 		parts := strings.Split(v.Name, "/")
 		apiID := parts[len(parts)-1]
 		apis[i] = API{
@@ -187,7 +177,6 @@ func (c *Client) ListAPIs() ([]API, error) {
 	return apis, nil
 }
 
-// GetAPI retrieves a specific API
 func (c *Client) GetAPI(apiID string) (*API, error) {
 	body, status, err := c.request("GET", c.apimPath("/apis/"+apiID), nil)
 	if err != nil {
@@ -215,7 +204,6 @@ func (c *Client) GetAPI(apiID string) (*API, error) {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Default to true if not specified
 	subRequired := true
 	if result.Properties.SubscriptionRequired != nil {
 		subRequired = *result.Properties.SubscriptionRequired
@@ -230,14 +218,12 @@ func (c *Client) GetAPI(apiID string) (*API, error) {
 	}, nil
 }
 
-// NamedValue represents an APIM named value
 type NamedValue struct {
 	Name   string
 	Value  string
 	Secret bool
 }
 
-// GetNamedValue retrieves a named value (returns empty string if secret or not found)
 func (c *Client) GetNamedValue(name string) (string, error) {
 	body, status, err := c.request("GET", c.apimPath("/namedValues/"+name), nil)
 	if err != nil {
@@ -245,7 +231,7 @@ func (c *Client) GetNamedValue(name string) (string, error) {
 	}
 
 	if status == 404 {
-		return "", nil // Not found
+		return "", nil
 	}
 	if status != 200 {
 		return "", fmt.Errorf("failed to get named value (status %d): %s", status, string(body))
@@ -268,10 +254,9 @@ func (c *Client) GetNamedValue(name string) (string, error) {
 	return result.Properties.Value, nil
 }
 
-// CreateOrUpdateNamedValue creates or updates a named value
 func (c *Client) CreateOrUpdateNamedValue(name, displayName, value string, secret bool) error {
-	payload := map[string]interface{}{
-		"properties": map[string]interface{}{
+	payload := map[string]any{
+		"properties": map[string]any{
 			"displayName": displayName,
 			"value":       value,
 			"secret":      secret,
@@ -296,13 +281,11 @@ func (c *Client) CreateOrUpdateNamedValue(name, displayName, value string, secre
 	return nil
 }
 
-// PolicyFragment represents an APIM policy fragment
 type PolicyFragment struct {
 	Name        string
 	Description string
 }
 
-// GetPolicyFragment checks if a policy fragment exists
 func (c *Client) GetPolicyFragment(name string) (bool, error) {
 	body, status, err := c.request("GET", c.apimPath("/policyFragments/"+name), nil)
 	if err != nil {
@@ -318,16 +301,15 @@ func (c *Client) GetPolicyFragment(name string) (bool, error) {
 	return true, nil
 }
 
-// CreateOrUpdatePolicyFragment creates or updates a policy fragment.
 func (c *Client) CreateOrUpdatePolicyFragment(name, xmlContent, description string) error {
-	properties := map[string]interface{}{
+	properties := map[string]any{
 		"format": "xml",
 		"value":  xmlContent,
 	}
 	if description != "" {
 		properties["description"] = description
 	}
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"properties": properties,
 	}
 
@@ -349,10 +331,9 @@ func (c *Client) CreateOrUpdatePolicyFragment(name, xmlContent, description stri
 	return nil
 }
 
-// SetAPIPolicy sets the policy for an API
 func (c *Client) SetAPIPolicy(apiID, xmlContent string) error {
-	payload := map[string]interface{}{
-		"properties": map[string]interface{}{
+	payload := map[string]any{
+		"properties": map[string]any{
 			"format": "xml",
 			"value":  xmlContent,
 		},
@@ -382,7 +363,6 @@ func (c *Client) waitForAsyncOperation(headers http.Header, resourceType, name s
 		asyncURL = headers.Get("Location")
 	}
 	if asyncURL == "" {
-		// No async URL provided; fall back to waiting briefly
 		time.Sleep(2 * time.Second)
 		return nil
 	}
@@ -392,7 +372,7 @@ func (c *Client) waitForAsyncOperation(headers http.Header, resourceType, name s
 		delay       = 2 * time.Second
 	)
 
-	for i := 0; i < maxAttempts; i++ {
+	for range maxAttempts {
 		status, body, err := c.getAsyncStatus(asyncURL)
 		if err != nil {
 			return err
@@ -444,7 +424,6 @@ func (c *Client) getAsyncStatus(asyncURL string) (string, string, error) {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		// Some endpoints may return empty or non-standard JSON
 		return "unknown", string(body), nil
 	}
 	if result.Status == "" {
@@ -456,7 +435,6 @@ func (c *Client) getAsyncStatus(asyncURL string) (string, string, error) {
 	return result.Status, string(body), nil
 }
 
-// GetGatewayURL retrieves the APIM gateway URL
 func (c *Client) GetGatewayURL() (string, error) {
 	body, status, err := c.request("GET", c.apimPath(""), nil)
 	if err != nil {
@@ -480,7 +458,6 @@ func (c *Client) GetGatewayURL() (string, error) {
 	return result.Properties.GatewayURL, nil
 }
 
-// GetAPIPolicy retrieves the current policy for an API
 func (c *Client) GetAPIPolicy(apiID string) (string, error) {
 	body, status, err := c.request("GET", c.apimPath("/apis/"+apiID+"/policies/policy"), nil)
 	if err != nil {

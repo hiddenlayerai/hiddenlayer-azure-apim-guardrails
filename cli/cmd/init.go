@@ -56,7 +56,6 @@ HL_PROJECT_ID=your-project-id
 func runInit(cmd *cobra.Command, args []string) error {
 	envFile := ".env"
 
-	// Check if file exists
 	if _, err := os.Stat(envFile); err == nil {
 		if !initForce {
 			return fmt.Errorf(".env file already exists\n\nUse --force to overwrite")
@@ -64,7 +63,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 		printWarning("Overwriting existing .env file")
 	}
 
-	// Write template
 	if err := os.WriteFile(envFile, []byte(envTemplate), 0600); err != nil {
 		return fmt.Errorf("failed to write .env file: %w", err)
 	}

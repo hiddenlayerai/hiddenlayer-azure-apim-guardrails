@@ -34,7 +34,6 @@ func HasHiddenLayerFragments(policyXML string, pkg *Package) bool {
 	return false
 }
 
-// GetPresentFragments returns which of the package's fragments are present in the policy.
 func GetPresentFragments(policyXML string, pkg *Package) []string {
 	var present []string
 	for _, fragID := range pkg.AllFragmentIDs() {
@@ -46,8 +45,6 @@ func GetPresentFragments(policyXML string, pkg *Package) []string {
 	return present
 }
 
-// InjectHiddenLayerFragments injects HiddenLayer fragment includes into an existing policy
-// while preserving all other policy elements.
 func InjectHiddenLayerFragments(existingPolicy string, pkg *Package) (string, error) {
 	if existingPolicy == "" {
 		return BuildHiddenLayerPolicy(pkg), nil
@@ -69,14 +66,10 @@ func InjectHiddenLayerFragments(existingPolicy string, pkg *Package) (string, er
 	return result, nil
 }
 
-// RemoveHiddenLayerFragments removes HiddenLayer fragment includes from a policy
-// using the package's fragment IDs.
 func RemoveHiddenLayerFragments(existingPolicy string, pkg *Package) (string, error) {
 	return RemoveHiddenLayerFragmentsByIDs(existingPolicy, pkg.AllFragmentIDs())
 }
 
-// DetectHiddenLayerFragmentIDs scans a policy for any hl-* include-fragment references
-// and returns the detected fragment IDs.
 func DetectHiddenLayerFragmentIDs(policyXML string) []string {
 	re := regexp.MustCompile(`<include-fragment\s+fragment-id="(hl-[^"]+)"\s*/>`)
 	matches := re.FindAllStringSubmatch(policyXML, -1)
@@ -92,8 +85,6 @@ func DetectHiddenLayerFragmentIDs(policyXML string) []string {
 	return ids
 }
 
-// RemoveHiddenLayerFragmentsByIDs removes the specified fragment IDs from a policy
-// while preserving all other policy elements.
 func RemoveHiddenLayerFragmentsByIDs(existingPolicy string, fragmentIDs []string) (string, error) {
 	if existingPolicy == "" {
 		return BasePolicy, nil
@@ -102,40 +93,33 @@ func RemoveHiddenLayerFragmentsByIDs(existingPolicy string, fragmentIDs []string
 	result := existingPolicy
 
 	for _, fragID := range fragmentIDs {
-		// Match comment followed by include-fragment
 		pattern := fmt.Sprintf(`\s*<!--[^>]*-->\s*\n?\s*<include-fragment\s+fragment-id="%s"\s*/>\s*`, regexp.QuoteMeta(fragID))
 		re := regexp.MustCompile(pattern)
 		result = re.ReplaceAllString(result, "\n")
 
-		// Also match standalone include-fragment without comment
 		pattern2 := fmt.Sprintf(`\s*<include-fragment\s+fragment-id="%s"\s*/>\s*`, regexp.QuoteMeta(fragID))
 		re2 := regexp.MustCompile(pattern2)
 		result = re2.ReplaceAllString(result, "\n")
 	}
 
-	// Remove the correlationId variable set by HiddenLayer (with its comment)
 	correlationPattern := `\s*<!--[^>]*correlation[^>]*-->\s*\n?\s*<set-variable\s+name="correlationId"[^/]*/>\s*`
 	reCorr := regexp.MustCompile("(?i)" + correlationPattern)
 	result = reCorr.ReplaceAllString(result, "\n")
 
-	// Also remove standalone correlationId set-variable (without comment)
 	correlationPattern2 := `\s*<set-variable\s+name="correlationId"\s+value="@\(context\.RequestId\.ToString\(\)\)"\s*/>\s*`
 	reCorr2 := regexp.MustCompile(correlationPattern2)
 	result = reCorr2.ReplaceAllString(result, "\n")
 
-	// Remove any remaining HiddenLayer-related comments
 	hlCommentPattern := `\s*<!--[^>]*HiddenLayer[^>]*-->\s*`
 	reHL := regexp.MustCompile("(?i)" + hlCommentPattern)
 	result = reHL.ReplaceAllString(result, "\n")
 
-	// Clean up extra blank lines
 	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
 	result = cleanupWhitespace(result)
 
 	return result, nil
 }
 
-// parsePolicy extracts the content of each section from the policy XML
 func parsePolicy(policyXML string) (*ParsedPolicy, error) {
 	parsed := &ParsedPolicy{Raw: policyXML}
 
@@ -162,7 +146,6 @@ func parsePolicy(policyXML string) (*ParsedPolicy, error) {
 	return parsed, nil
 }
 
-// hasAllHLFragments checks if the policy already has all fragments from the package.
 func hasAllHLFragments(policyXML string, pkg *Package) bool {
 	for _, fragID := range pkg.AllFragmentIDs() {
 		pattern := fmt.Sprintf(`<include-fragment\s+fragment-id="%s"\s*/>`, regexp.QuoteMeta(fragID))
@@ -173,8 +156,6 @@ func hasAllHLFragments(policyXML string, pkg *Package) bool {
 	return true
 }
 
-// injectIntoSection injects fragment includes into a policy section.
-// It places them after <base /> and adds the correlationId variable if isInbound.
 func injectIntoSection(sectionContent string, fragmentIDs []string, isInbound bool) string {
 	if sectionContent == "" {
 		sectionContent = "\n        <base />\n    "
@@ -214,16 +195,12 @@ func injectIntoSection(sectionContent string, fragmentIDs []string, isInbound bo
 	return fragments.String() + sectionContent
 }
 
-// getFragmentComment returns a descriptive comment for a fragment.
-// It derives the comment from the fragment ID.
 func getFragmentComment(fragID string) string {
-	// Strip "hl-" prefix and convert hyphens to spaces
 	name := strings.TrimPrefix(fragID, "hl-")
 	name = strings.ReplaceAll(name, "-", " ")
 	return "HiddenLayer: " + name
 }
 
-// reconstructPolicy rebuilds the full policy XML from sections
 func reconstructPolicy(inbound, backend, outbound, onError string) string {
 	var b strings.Builder
 	b.WriteString("<policies>\n")
@@ -243,7 +220,6 @@ func reconstructPolicy(inbound, backend, outbound, onError string) string {
 	return b.String()
 }
 
-// cleanupWhitespace removes excessive whitespace while preserving structure
 func cleanupWhitespace(policyXML string) string {
 	lines := strings.Split(policyXML, "\n")
 	var cleaned []string
@@ -264,7 +240,6 @@ func cleanupWhitespace(policyXML string) string {
 	return strings.Join(cleaned, "\n")
 }
 
-// ValidatePolicy performs basic validation on policy XML
 func ValidatePolicy(policyXML string) error {
 	if policyXML == "" {
 		return fmt.Errorf("policy is empty")
@@ -297,7 +272,6 @@ func ValidatePolicy(policyXML string) error {
 	return nil
 }
 
-// FormatPolicyForDisplay formats a policy for terminal display
 func FormatPolicyForDisplay(policyXML string, maxLines int) string {
 	lines := strings.Split(policyXML, "\n")
 	if len(lines) <= maxLines {

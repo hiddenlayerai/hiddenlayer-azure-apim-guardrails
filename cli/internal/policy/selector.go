@@ -9,10 +9,6 @@ import (
 	"strings"
 )
 
-// SelectPackage resolves a package by flag value, auto-selection, or interactive menu.
-// If flagValue is non-empty it loads that package directly.
-// If only one package exists it auto-selects.
-// Otherwise it presents a numbered menu reading from r and writing to w.
 func SelectPackage(flagValue string, r io.Reader, w io.Writer) (*Package, error) {
 	if flagValue != "" {
 		return LoadPackage(flagValue)
@@ -29,7 +25,6 @@ func SelectPackage(flagValue string, r io.Reader, w io.Writer) (*Package, error)
 		return LoadPackage(names[0])
 	}
 
-	// Interactive menu
 	fmt.Fprintln(w, "Available fragment packages:")
 	for i, name := range names {
 		m, err := LoadPackageManifest(name)
@@ -62,7 +57,6 @@ func SelectPackage(flagValue string, r io.Reader, w io.Writer) (*Package, error)
 	return LoadPackage(names[choice-1])
 }
 
-// SelectPackageStdin is a convenience wrapper that uses os.Stdin and os.Stdout.
 func SelectPackageStdin(flagValue string) (*Package, error) {
 	return SelectPackage(flagValue, os.Stdin, os.Stdout)
 }
