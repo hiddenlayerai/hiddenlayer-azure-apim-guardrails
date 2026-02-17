@@ -1,0 +1,116 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/joho/godotenv"
+)
+
+// Config holds the application configuration
+type Config struct {
+	// Azure configuration
+	ResourceGroup  string
+	APIMName       string
+	SubscriptionID string
+
+	// HiddenLayer configuration
+	HLClientID     string
+	HLClientSecret string
+	HLProjectID    string
+	HLHost         string
+
+	// Optional
+	TargetAPI string
+	HLPackage string
+}
+
+// Load reads configuration from default .env locations and environment variables
+func Load() (*Config, error) {
+	envPaths := []string{
+		".env",
+		filepath.Join(os.Getenv("HOME"), ".hiddenlayer", ".env"),
+	}
+
+	for _, path := range envPaths {
+		if _, err := os.Stat(path); err == nil {
+			// Load .env file (doesn't override existing env vars)
+			_ = godotenv.Load(path)
+			break
+		}
+	}
+
+	cfg := buildConfigFromEnv()
+	cfg.normalizeConfig()
+	return cfg, nil
+}
+
+// LoadFrom reads configuration from a specific .env file path
+func LoadFrom(path string) (*Config, error) {
+	if path == "" {
+		return Load()
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("config file not found: %s", path)
+	}
+
+	// Use Overload so an explicit --config wins over exported env vars
+	if err := godotenv.Overload(path); err != nil {
+		return nil, fmt.Errorf("failed to load config file: %w", err)
+	}
+
+	cfg := buildConfigFromEnv()
+	cfg.normalizeConfig()
+	return cfg, nil
+}
+
+func buildConfigFromEnv() *Config {
+	return &Config{
+		ResourceGroup:  os.Getenv("RG"),
+		APIMName:       os.Getenv("APIM_NAME"),
+		SubscriptionID: os.Getenv("AZURE_SUBSCRIPTION_ID"),
+		HLClientID:     os.Getenv("HL_CLIENT"),
+		HLClientSecret: os.Getenv("HL_SECRET"),
+		HLProjectID:    os.Getenv("HL_PROJECT_ID"),
+		HLHost:         os.Getenv("HL_HOST"),
+		TargetAPI:      os.Getenv("HL_TARGET_API"),
+		HLPackage:      os.Getenv("HL_PACKAGE"),
+	}
+}
+
+// normalizeConfig fills defaults
+func (c *Config) normalizeConfig() {
+	if c.HLHost == "" {
+		c.HLHost = "hiddenlayer.ai"
+	}
+}
+
+// Validate checks that required configuration is present
+func (c *Config) Validate() error {
+	if c.ResourceGroup == "" {
+		return fmt.Errorf("resource_group (RG) is required")
+	}
+	if c.APIMName == "" {
+		return fmt.Errorf("apim_name (APIM_NAME) is required")
+	}
+	return nil
+}
+
+// ValidateHLCredentials checks that HiddenLayer credentials are configured
+func (c *Config) ValidateHLCredentials() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if c.HLClientID == "" {
+		return fmt.Errorf("hl_client_id (HL_CLIENT) is required")
+	}
+	if c.HLClientSecret == "" {
+		return fmt.Errorf("hl_client_secret (HL_SECRET) is required")
+	}
+	if c.HLProjectID == "" {
+		return fmt.Errorf("hl_project_id (HL_PROJECT_ID) is required")
+	}
+	return nil
+}

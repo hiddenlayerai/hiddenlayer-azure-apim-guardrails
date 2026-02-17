@@ -1,0 +1,7 @@
+{
+    "name": "v1-interactions",
+    "version": "1.0.0",
+    "description": "HiddenLayer v1 Interactions API",
+    "inbound": ["hl-oauth-token-management", "hl-interactions-input"],
+    "outbound": ["hl-interactions-output"]
+}

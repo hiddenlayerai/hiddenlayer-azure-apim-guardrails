@@ -1,6 +1,6 @@
 # Coding Guidelines
 
-Welcome to the [Project Name] coding guidelines! These guidelines are designed to ensure consistency and maintainability in our codebase. Please follow these guidelines when contributing to the project.
+Welcome to the HiddenLayer Azure APIM Guardrails coding guidelines! These guidelines are designed to ensure consistency and maintainability in our codebase. Please follow these guidelines when contributing to the project.
 
 ## General Principles
 
@@ -14,15 +14,17 @@ Welcome to the [Project Name] coding guidelines! These guidelines are designed t
 
 ## Language-Specific Guidelines
 
-### Python
+### Go
 
-1. **PEP 8 Compliance**: Follow the guidelines outlined in [PEP 8](https://www.python.org/dev/peps/pep-0008/) for Python code style and formatting.
+1. **Formatting**: All Go code must be formatted with `gofmt`. Run `gofmt -s -w .` or use your editor's format-on-save.
 
-2. **Docstrings**: Use docstrings to document functions, classes, and modules. Follow the [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings) for docstring conventions.
+2. **Naming**: Follow the [Go naming conventions](https://go.dev/doc/effective_go#names). Use MixedCaps for exported identifiers and mixedCaps for unexported ones. Avoid stuttering (e.g., prefer `policy.Fragment` over `policy.PolicyFragment`).
 
-3. **Imports**: Organize imports alphabetically and group them according to standard library imports, third-party library imports, and local imports.
+3. **Error Handling**: Always check returned errors. Wrap errors with context using `fmt.Errorf("doing X: %w", err)`. Do not discard errors silently.
 
-4. **Error Handling**: Handle errors gracefully using try-except blocks or other appropriate mechanisms. Avoid catching generic exceptions unless necessary.
+4. **Packages**: Keep packages focused and cohesive. Avoid circular dependencies. Use `internal/` for packages that should not be imported by external consumers.
+
+5. **Testing**: Write table-driven tests where appropriate. Place test files alongside the code they test (`*_test.go`). Use `go test ./...` to run the full suite.
 
 ## Version Control Guidelines
 
