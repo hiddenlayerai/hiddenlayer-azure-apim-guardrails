@@ -1,0 +1,7 @@
+{
+    "name": "test-fixture",
+    "version": "0.0.1",
+    "description": "Test fixture package for unit tests",
+    "inbound": ["hl-test-fragment"],
+    "outbound": []
+}

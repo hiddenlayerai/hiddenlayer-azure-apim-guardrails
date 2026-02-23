@@ -1,0 +1,139 @@
+<fragment>
+    <!-- HiddenLayer v1 Interactions – Output Evaluation -->
+    <set-variable name="hl_project_id" value="{{hl-project-id}}" />
+    <set-variable name="hl_skip_models" value='@(context.Request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) &amp;&amp; context.Request.Url.Path != null &amp;&amp; context.Request.Url.Path.EndsWith("/v1/models", StringComparison.OrdinalIgnoreCase))' />
+    <set-variable name="hl_is_streaming" value='@{
+        var originalBody = (string)context.Variables.GetValueOrDefault("hl_original_body", "");
+        if (string.IsNullOrEmpty(originalBody)) {
+            return false;
+        }
+        try {
+            var parsed = JObject.Parse(originalBody);
+            var streamToken = parsed["stream"];
+            return streamToken != null &amp;&amp; streamToken.Type == JTokenType.Boolean &amp;&amp; (bool)streamToken;
+        } catch {
+            return false;
+        }
+    }' />
+    <choose>
+        <when condition='@((bool)context.Variables["hl_skip_models"] || (bool)context.Variables.GetValueOrDefault("hl_is_streaming", false))'>
+            <!-- Skip HiddenLayer scanning for model discovery responses -->
+            <set-variable name="hl_output_status_code" value='@((bool)context.Variables.GetValueOrDefault("hl_is_streaming", false) ? "skipped-stream" : "skipped")' />
+            <set-variable name="hl_runtime_action" value='@("")' />
+            <set-variable name="hl_threat_level" value='@((string)context.Variables.GetValueOrDefault("hl_threat_level", ""))' />
+        </when>
+        <otherwise>
+            <set-variable name="hl_output_start" value="@(DateTime.UtcNow)" />
+            <set-variable name="hl_original_response" value="@(context.Response.Body.As&lt;string&gt;(preserveContent: true))" />
+            <set-variable name="hl_runtime_action" value='@("")' />
+            <set-variable name="hl_threat_level" value='@("")' />
+            <send-request mode="new" response-variable-name="hl_eval_output_response" timeout="30" ignore-error="true">
+                <set-url>https://api.{{hl-host}}/detection/v1/interactions</set-url>
+                <set-method>POST</set-method>
+                <set-header name="Content-Type" exists-action="override">
+                    <value>application/json</value>
+                </set-header>
+                <set-header name="Authorization" exists-action="override">
+                    <value>@("Bearer " + (string)context.Variables["access_token"])</value>
+                </set-header>
+                <set-header name="HL-Project-Id" exists-action="override">
+                    <value>@((string)context.Variables["hl_project_id"])</value>
+                </set-header>
+                <set-header name="X-Correlation-Id" exists-action="override">
+                    <value>@((string)context.Variables["correlationId"])</value>
+                </set-header>
+                <set-body><![CDATA[@{
+                    var body = JObject.Parse((string)context.Variables["hl_original_response"]);
+                    var choices = body["choices"] as JArray ?? new JArray();
+                    var outputMessages = new JArray();
+                    foreach (var choice in choices) {
+                        var msg = choice["message"];
+                        if (msg != null) {
+                            outputMessages.Add(msg);
+                        }
+                    }
+                    var v1Body = new JObject {
+                        ["metadata"] = new JObject {
+                            ["model"] = (string)context.Variables.GetValueOrDefault("hl_model", ""),
+                            ["requester_id"] = (string)context.Variables.GetValueOrDefault("hl_requester_id", ""),
+                            ["provider"] = (string)context.Variables.GetValueOrDefault("hl_provider", "azure-apim")
+                        },
+                        ["output"] = new JObject {
+                            ["messages"] = outputMessages
+                        }
+                    };
+                    return v1Body.ToString();
+                }]]></set-body>
+            </send-request>
+            <set-variable name="hl_output_status_code" value='@(context.Variables.ContainsKey("hl_eval_output_response") &amp;&amp; context.Variables["hl_eval_output_response"] != null ? ((IResponse)context.Variables["hl_eval_output_response"]).StatusCode.ToString() : "null")' />
+            <set-variable name="hl_output_duration_ms" value='@((DateTime.UtcNow - (DateTime)context.Variables["hl_output_start"]).TotalMilliseconds)' />
+            <choose>
+                <when condition='@(context.Variables.ContainsKey("hl_eval_output_response") &amp;&amp; context.Variables["hl_eval_output_response"] != null &amp;&amp; ((IResponse)context.Variables["hl_eval_output_response"]).StatusCode >= 200 &amp;&amp; ((IResponse)context.Variables["hl_eval_output_response"]).StatusCode &lt; 300)'>
+                    <set-variable name="hl_eval_output_json" value='@(((IResponse)context.Variables["hl_eval_output_response"]).Body.As&lt;JObject&gt;())' />
+                    <set-variable name="hl_runtime_action" value='@((string)(((JObject)context.Variables["hl_eval_output_json"])["evaluation"]?["action"] ?? ""))' />
+                    <set-variable name="hl_threat_level" value='@((string)(((JObject)context.Variables["hl_eval_output_json"])["evaluation"]?["threat_level"] ?? ""))' />
+                    <choose>
+                        <when condition='@(((string)context.Variables.GetValueOrDefault("hl_runtime_action", "")).Equals("Block", StringComparison.OrdinalIgnoreCase))'>
+                            <!-- Block: Return OpenAI-format block response to client -->
+                            <set-body><![CDATA[@{
+                                var evalJson = (JObject)context.Variables["hl_eval_output_json"];
+                                var threatLevel = (string)(evalJson["evaluation"]?["threat_level"] ?? "unknown");
+                                var blockMsg = $"This response has been blocked by HiddenLayer AI security. Threat level: {threatLevel}";
+                                var resp = new JObject {
+                                    ["id"] = "hl-blocked",
+                                    ["object"] = "chat.completion",
+                                    ["choices"] = new JArray {
+                                        new JObject {
+                                            ["index"] = 0,
+                                            ["message"] = new JObject {
+                                                ["role"] = "assistant",
+                                                ["content"] = blockMsg
+                                            },
+                                            ["finish_reason"] = "stop"
+                                        }
+                                    }
+                                };
+                                return resp.ToString();
+                            }]]></set-body>
+                        </when>
+                        <when condition='@(((string)context.Variables.GetValueOrDefault("hl_runtime_action", "")).Equals("Redact", StringComparison.OrdinalIgnoreCase))'>
+                            <!-- Redact: Map modified_data.output.messages back into choices[].message -->
+                            <set-body><![CDATA[@{
+                                var evalJson = (JObject)context.Variables["hl_eval_output_json"];
+                                var redactedMessages = evalJson["modified_data"]?["output"]?["messages"] as JArray;
+                                if (redactedMessages != null) {
+                                    var original = JObject.Parse((string)context.Variables["hl_original_response"]);
+                                    var choices = original["choices"] as JArray ?? new JArray();
+                                    for (int i = 0; i < choices.Count && i < redactedMessages.Count; i++) {
+                                        choices[i]["message"] = redactedMessages[i];
+                                    }
+                                    return original.ToString();
+                                }
+                                return (string)context.Variables["hl_original_response"];
+                            }]]></set-body>
+                        </when>
+                        <otherwise>
+                            <!-- Allow/Alert: Pass original response unchanged -->
+                            <set-body>@((string)context.Variables["hl_original_response"])</set-body>
+                        </otherwise>
+                    </choose>
+                </when>
+            </choose>
+        </otherwise>
+    </choose>
+    <set-header name="HL-Input-Status" exists-action="override">
+        <value>@((string)context.Variables.GetValueOrDefault("hl_input_status_code", ""))</value>
+    </set-header>
+    <set-header name="HL-Runtime-Action" exists-action="override">
+        <value>@(((string)context.Variables.GetValueOrDefault("hl_runtime_action", "")).Equals("Block", StringComparison.OrdinalIgnoreCase) ? "BLOCK" : "")</value>
+    </set-header>
+    <set-header name="HL-Output-Status" exists-action="override">
+        <value>@((string)context.Variables.GetValueOrDefault("hl_output_status_code", ""))</value>
+    </set-header>
+    <set-header name="HL-Interaction-Action" exists-action="override">
+        <value>@((string)context.Variables.GetValueOrDefault("hl_runtime_action", ""))</value>
+    </set-header>
+    <set-header name="HL-Interaction-Threat-Level" exists-action="override">
+        <value>@((string)context.Variables.GetValueOrDefault("hl_threat_level", ""))</value>
+    </set-header>
+</fragment>

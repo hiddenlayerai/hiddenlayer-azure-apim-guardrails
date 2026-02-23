@@ -1,0 +1,23 @@
+# Environment files (may contain secrets)
+*.env*
+
+# CLI binary
+cli/hiddenlayer-apim
+cli/hiddenlayer-apim.exe
+
+# CLI build output
+cli/dist/
+
+# CLI test artifacts
+cli/coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+specs/*

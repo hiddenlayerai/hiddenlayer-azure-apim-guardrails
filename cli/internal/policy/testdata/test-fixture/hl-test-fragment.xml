@@ -1,0 +1,4 @@
+<fragment>
+    <!-- Test Fragment -->
+    <set-variable name="test" value="true" />
+</fragment>

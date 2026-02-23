@@ -1,4 +1,4 @@
-# HiddenLayer Azure APIM Guardrails
+# HiddenLayer APIM CLI
 
 A command-line tool for deploying and managing HiddenLayer AI security scanning in Azure API Management.
 
@@ -13,17 +13,17 @@ A command-line tool for deploying and managing HiddenLayer AI security scanning 
 
 ```bash
 # Clone and build
-git clone https://github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails.git
+git clone https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails.git
 cd hiddenlayer-azure-apim-guardrails/cli
 make build
 
 # Or install directly
-go install github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails/cli@latest
+go install github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli@latest
 ```
 
 ### Pre-built Binaries
 
-Download from the [releases page](https://github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails/releases).
+Download from the [releases page](https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases).
 
 ## Quick Start
 
@@ -80,7 +80,7 @@ HL_TARGET_API=default-api-id
 
 ## Fragment Packages
 
-Fragments are organized into **packages** under `cli/internal/policy/packages/`. Each package contains a `package.json` manifest (including `name`, `version`, `inbound`, `outbound`) and `.xml` fragment files. The CLI auto-discovers available packages at compile time via `//go:embed`.
+Fragments are organized into **packages** under `internal/policy/packages/`. Each package contains a `package.json` manifest (including `name`, `version`, `inbound`, `outbound`) and `.xml` fragment files. The CLI auto-discovers available packages at compile time via `//go:embed`.
 
 - Use `--package <name>` on `deploy`, `apply`, `status`, or `remove` to select a specific package.
 - Set `HL_PACKAGE` in your `.env` to set a default.
@@ -127,8 +127,8 @@ The APIM policy constructs a structured JSON body for each call:
 ```json
 {
   "metadata": { "model": "...", "requester_id": "...", "provider": "..." },
-  "input": { "messages": [...] }
-  "output": { "messages": [...] }
+  "input": { "messages": [...] }   // for input evaluation
+  "output": { "messages": [...] }  // for output evaluation
 }
 ```
 
@@ -187,8 +187,6 @@ hiddenlayer-apim remove openai-proxy
 ## Building
 
 ```bash
-cd cli
-
 # Build for current platform
 make build
 
@@ -230,10 +228,6 @@ git push origin v1.2.3
 
 Branch protection setup for these requirements is documented in `.github/BRANCH_PROTECTION.md`.
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to this project.
-
 ## License
 
-Copyright HiddenLayer, Inc. Licensed under the [Apache License 2.0](LICENSE).
+Copyright HiddenLayer, Inc.
