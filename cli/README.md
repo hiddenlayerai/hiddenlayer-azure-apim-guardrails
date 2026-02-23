@@ -23,7 +23,7 @@ go install github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli@latest
 
 ### Pre-built Binaries
 
-Download from the [releases page](https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases).
+Download from the [tags page](https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/tags).
 
 ## Quick Start
 

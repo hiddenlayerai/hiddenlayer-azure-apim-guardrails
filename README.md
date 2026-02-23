@@ -13,17 +13,17 @@ A command-line tool for deploying and managing HiddenLayer AI security scanning 
 
 ```bash
 # Clone and build
-git clone https://github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails.git
+git clone https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails.git
 cd hiddenlayer-azure-apim-guardrails/cli
 make build
 
 # Or install directly
-go install github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails/cli@latest
+go install github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli@latest
 ```
 
 ### Pre-built Binaries
 
-Download from the [releases page](https://github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails/releases).
+Download from the [tags page](https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/tags).
 
 ## Quick Start
 
