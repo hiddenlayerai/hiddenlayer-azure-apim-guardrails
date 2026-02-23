@@ -56,4 +56,10 @@ build-windows:
 # Release target (creates checksums)
 .PHONY: release
 release: build-all
-	cd dist && sha256sum * > checksums.txt
+	cd dist && \
+		tar -czf "hiddenlayer-apim-$(VERSION)-linux-amd64.tar.gz" hiddenlayer-apim-linux-amd64 && \
+		tar -czf "hiddenlayer-apim-$(VERSION)-linux-arm64.tar.gz" hiddenlayer-apim-linux-arm64 && \
+		tar -czf "hiddenlayer-apim-$(VERSION)-darwin-amd64.tar.gz" hiddenlayer-apim-darwin-amd64 && \
+		tar -czf "hiddenlayer-apim-$(VERSION)-darwin-arm64.tar.gz" hiddenlayer-apim-darwin-arm64 && \
+		zip -q "hiddenlayer-apim-$(VERSION)-windows-amd64.zip" hiddenlayer-apim-windows-amd64.exe
+	cd dist && sha256sum "hiddenlayer-apim-$(VERSION)-"*.tar.gz "hiddenlayer-apim-$(VERSION)-"*.zip > checksums.txt
