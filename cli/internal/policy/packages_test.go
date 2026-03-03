@@ -24,8 +24,24 @@ func TestListPackages(t *testing.T) {
 	if !found["v1-interactions"] {
 		t.Errorf("ListPackages() missing %q, got %v", "v1-interactions", names)
 	}
+	if !found["v2-beta-request-evals"] {
+		t.Errorf("ListPackages() missing %q, got %v", "v2-beta-request-evals", names)
+	}
+	if !found["v2-beta-response-evals"] {
+		t.Errorf("ListPackages() missing %q, got %v", "v2-beta-response-evals", names)
+	}
 	if found["test-fixture"] {
 		t.Errorf("ListPackages() should not contain test-fixture; test fixtures belong in testdata/")
+	}
+}
+
+func TestSharedFragmentIDs_IncludesOAuth(t *testing.T) {
+	shared, err := SharedFragmentIDs()
+	if err != nil {
+		t.Fatalf("SharedFragmentIDs() error = %v", err)
+	}
+	if !shared["hl-oauth-token-management"] {
+		t.Fatal("expected hl-oauth-token-management to be shared across packages")
 	}
 }
 

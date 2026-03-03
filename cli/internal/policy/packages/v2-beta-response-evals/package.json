@@ -1,0 +1,7 @@
+{
+    "name": "v2-beta-response-evals",
+    "version": "1.0.0",
+    "description": "HiddenLayer v2-beta response evaluations (allow/redact/block)",
+    "inbound": ["hl-oauth-token-management", "hl-v2beta-response-evals-inbound"],
+    "outbound": ["hl-v2beta-response-evaluations"]
+}

@@ -1,0 +1,11 @@
+<fragment>
+    <!-- HiddenLayer v2-beta Response Evaluations – Inbound Setup -->
+    <set-variable name="hl_runtime_action" value='@("")' />
+    <set-variable name="hl_original_body" value="@(context.Request.Body.As&lt;string&gt;(preserveContent: true))" />
+    <set-header name="HL-Model" exists-action="delete" />
+    <set-header name="HL-Provider" exists-action="delete" />
+    <set-header name="HL-Requester-Id" exists-action="delete" />
+    <set-header name="Accept-Encoding" exists-action="override">
+        <value>identity</value>
+    </set-header>
+</fragment>

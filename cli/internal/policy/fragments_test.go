@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/xml"
 	"strings"
 	"testing"
 )
@@ -10,6 +11,24 @@ func loadV1Package(t *testing.T) *Package {
 	pkg, err := LoadPackage("v1-interactions")
 	if err != nil {
 		t.Fatalf("failed to load v1-interactions package: %v", err)
+	}
+	return pkg
+}
+
+func loadV2RequestEvalsPackage(t *testing.T) *Package {
+	t.Helper()
+	pkg, err := LoadPackage("v2-beta-request-evals")
+	if err != nil {
+		t.Fatalf("failed to load v2-beta-request-evals package: %v", err)
+	}
+	return pkg
+}
+
+func loadV2ResponseEvalsPackage(t *testing.T) *Package {
+	t.Helper()
+	pkg, err := LoadPackage("v2-beta-response-evals")
+	if err != nil {
+		t.Fatalf("failed to load v2-beta-response-evals package: %v", err)
 	}
 	return pkg
 }
@@ -256,6 +275,116 @@ func TestInputFragmentHandlesRedactAction(t *testing.T) {
 	}
 	if !strings.Contains(input, `["input"]?["messages"]`) {
 		t.Error("InputFragment does not reference modified_data.input.messages")
+	}
+}
+
+func TestAllEmbeddedFragmentsAreWellFormedXML(t *testing.T) {
+	names, err := ListPackages()
+	if err != nil {
+		t.Fatalf("ListPackages() error = %v", err)
+	}
+
+	for _, pkgName := range names {
+		pkg, err := LoadPackage(pkgName)
+		if err != nil {
+			t.Fatalf("LoadPackage(%q) error = %v", pkgName, err)
+		}
+
+		for _, frag := range pkg.Fragments {
+			t.Run(pkgName+"/"+frag.ID, func(t *testing.T) {
+				decoder := xml.NewDecoder(strings.NewReader(frag.XML))
+				for {
+					_, err := decoder.Token()
+					if err != nil {
+						if err.Error() == "EOF" {
+							break
+						}
+						t.Fatalf("invalid fragment XML: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestV2RequestEvalsFragmentContainsEndpointAndHeaders(t *testing.T) {
+	pkg := loadV2RequestEvalsPackage(t)
+	xml := getFragmentXML(t, pkg, "hl-v2beta-request-evaluations")
+
+	if !strings.Contains(xml, "/detection/v2-beta/request-evaluation") {
+		t.Error("v2 request evals fragment does not contain expected endpoint /detection/v2-beta/request-evaluation")
+	}
+	if !strings.Contains(xml, "hl-runtime-edge-provider") {
+		t.Error("v2 request evals fragment does not set hl-runtime-edge-provider header")
+	}
+	if !strings.Contains(xml, ">azure-apim<") {
+		t.Error("v2 request evals fragment does not set hl-runtime-edge-provider to azure-apim")
+	}
+	if !strings.Contains(xml, "X-PolicyDefinition-Id") {
+		t.Error("v2 request evals fragment does not set X-PolicyDefinition-Id header")
+	}
+	if !strings.Contains(xml, "{{hl-req-evals-policy-id}}") {
+		t.Error("v2 request evals fragment does not reference {{hl-req-evals-policy-id}} named value")
+	}
+}
+
+func TestV2RequestEvalsUsesRuntimeActionHeaderForBlock(t *testing.T) {
+	pkg := loadV2RequestEvalsPackage(t)
+	xml := getFragmentXML(t, pkg, "hl-v2beta-request-evaluations")
+
+	if !strings.Contains(xml, "hl-runtime-action") {
+		t.Error("v2 request evals fragment does not reference hl-runtime-action response header")
+	}
+	if !strings.Contains(xml, "<return-response>") {
+		t.Error("v2 request evals fragment does not use return-response for BLOCK")
+	}
+	if !strings.Contains(xml, "HL-Runtime-Action") {
+		t.Error("v2 request evals fragment does not set HL-Runtime-Action on block response")
+	}
+}
+
+func TestV2RequestEvalsSurfaceRuntimeActionFragmentSetsHeader(t *testing.T) {
+	pkg := loadV2RequestEvalsPackage(t)
+	xml := getFragmentXML(t, pkg, "hl-v2beta-surface-runtime-action")
+
+	if !strings.Contains(xml, "HL-Runtime-Action") {
+		t.Error("v2 request evals surface fragment does not set HL-Runtime-Action")
+	}
+	if !strings.Contains(xml, "hl_runtime_action") {
+		t.Error("v2 request evals surface fragment does not reference hl_runtime_action variable")
+	}
+}
+
+func TestV2ResponseEvalsFragmentContainsEndpointAndHeaders(t *testing.T) {
+	pkg := loadV2ResponseEvalsPackage(t)
+	xml := getFragmentXML(t, pkg, "hl-v2beta-response-evaluations")
+
+	if !strings.Contains(xml, "/detection/v2-beta/response-evaluation") {
+		t.Error("v2 response evals fragment does not contain expected endpoint /detection/v2-beta/response-evaluation")
+	}
+	if !strings.Contains(xml, "hl-runtime-edge-provider") {
+		t.Error("v2 response evals fragment does not set hl-runtime-edge-provider header")
+	}
+	if !strings.Contains(xml, ">azure-apim<") {
+		t.Error("v2 response evals fragment does not set hl-runtime-edge-provider to azure-apim")
+	}
+	if !strings.Contains(xml, "X-PolicyDefinition-Id") {
+		t.Error("v2 response evals fragment does not set X-PolicyDefinition-Id header")
+	}
+	if !strings.Contains(xml, "{{hl-resp-evals-policy-id}}") {
+		t.Error("v2 response evals fragment does not reference {{hl-resp-evals-policy-id}} named value")
+	}
+}
+
+func TestV2ResponseEvalsUsesRuntimeActionHeaderAndSurfacesDecision(t *testing.T) {
+	pkg := loadV2ResponseEvalsPackage(t)
+	xml := getFragmentXML(t, pkg, "hl-v2beta-response-evaluations")
+
+	if !strings.Contains(xml, "hl-runtime-action") {
+		t.Error("v2 response evals fragment does not reference hl-runtime-action response header")
+	}
+	if !strings.Contains(xml, "HL-Runtime-Action") {
+		t.Error("v2 response evals fragment does not surface HL-Runtime-Action header")
 	}
 }
 

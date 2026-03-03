@@ -10,6 +10,7 @@ import (
 )
 
 var removePackage string
+var removePackages []string
 
 var removeCmd = &cobra.Command{
 	Use:   "remove [api-id]",
@@ -25,6 +26,7 @@ If no API ID is provided, uses HL_TARGET_API from configuration.`,
 
 func init() {
 	removeCmd.Flags().StringVar(&removePackage, "package", "", "fragment package to remove (omit to auto-detect)")
+	removeCmd.Flags().StringSliceVar(&removePackages, "packages", nil, "fragment packages to remove (comma-separated or repeated; cannot be used with --package)")
 	rootCmd.AddCommand(removeCmd)
 }
 
@@ -65,13 +67,101 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to read existing policy: %w", err)
 	}
 
+	if cmd.Flags().Changed("packages") && cmd.Flags().Changed("package") {
+		return fmt.Errorf("--packages cannot be used with --package")
+	}
+
 	pkgFlag := removePackage
 	if pkgFlag == "" {
 		pkgFlag = cfg.HLPackage
 	}
 
 	var newPolicy string
-	if pkgFlag != "" {
+	if cmd.Flags().Changed("packages") {
+		raw, err := cmd.Flags().GetStringSlice("packages")
+		if err != nil {
+			return fmt.Errorf("read --packages: %w", err)
+		}
+		names, err := normalizeUniquePackageNames(raw)
+		if err != nil {
+			return err
+		}
+		if len(names) == 0 {
+			return fmt.Errorf("no packages specified")
+		}
+
+		var pkgs []*policy.Package
+		for _, name := range names {
+			pkg, err := policy.LoadPackage(name)
+			if err != nil {
+				return fmt.Errorf("package load %q: %w", name, err)
+			}
+			pkgs = append(pkgs, pkg)
+		}
+
+		present := policy.DetectHiddenLayerFragmentIDs(existingPolicy)
+		idsToRemoveSet := map[string]bool{}
+		for _, pkg := range pkgs {
+			for _, id := range pkg.AllFragmentIDs() {
+				idsToRemoveSet[id] = true
+			}
+		}
+
+		idsToRemoveSet2 := map[string]bool{}
+		for k, v := range idsToRemoveSet {
+			idsToRemoveSet2[k] = v
+		}
+
+		var idsToRemove []string
+		for _, pkg := range pkgs {
+			for _, id := range pkg.AllFragmentIDs() {
+				if idsToRemoveSet2[id] {
+					idsToRemove = append(idsToRemove, id)
+					delete(idsToRemoveSet2, id)
+				}
+			}
+		}
+
+		anyPresent := false
+		for _, id := range present {
+			if idsToRemoveSet[id] {
+				anyPresent = true
+				break
+			}
+		}
+		if !anyPresent {
+			printWarning("No HiddenLayer fragments found in policy for specified packages")
+			return nil
+		}
+
+		remaining := false
+		for _, id := range present {
+			if !idsToRemoveSet[id] {
+				remaining = true
+				break
+			}
+		}
+
+		if remaining {
+			shared, err := policy.SharedFragmentIDs()
+			if err != nil {
+				return fmt.Errorf("compute shared fragments: %w", err)
+			}
+			filtered := idsToRemove[:0]
+			for _, id := range idsToRemove {
+				if shared[id] {
+					continue
+				}
+				filtered = append(filtered, id)
+			}
+			idsToRemove = filtered
+		}
+
+		newPolicy, err = policy.RemoveHiddenLayerFragmentsByIDs(existingPolicy, idsToRemove)
+		if err != nil {
+			return err
+		}
+	} else if pkgFlag != "" {
 		pkg, err := policy.LoadPackage(pkgFlag)
 		if err != nil {
 			return fmt.Errorf("package load: %w", err)
@@ -80,7 +170,38 @@ func runRemove(cmd *cobra.Command, args []string) error {
 			printWarning("No HiddenLayer fragments found in policy")
 			return nil
 		}
-		newPolicy, err = policy.RemoveHiddenLayerFragments(existingPolicy, pkg)
+
+		idsToRemove := pkg.AllFragmentIDs()
+		present := policy.DetectHiddenLayerFragmentIDs(existingPolicy)
+		pkgIDs := map[string]bool{}
+		for _, id := range idsToRemove {
+			pkgIDs[id] = true
+		}
+		otherFragmentsRemain := false
+		for _, id := range present {
+			if !pkgIDs[id] {
+				otherFragmentsRemain = true
+				break
+			}
+		}
+		if otherFragmentsRemain {
+			// Preserve shared fragments (e.g., hl-oauth-token-management) so removing one
+			// package does not break other installed HiddenLayer fragments.
+			shared, err := policy.SharedFragmentIDs()
+			if err != nil {
+				return fmt.Errorf("compute shared fragments: %w", err)
+			}
+			filtered := make([]string, 0, len(idsToRemove))
+			for _, id := range idsToRemove {
+				if shared[id] {
+					continue
+				}
+				filtered = append(filtered, id)
+			}
+			idsToRemove = filtered
+		}
+
+		newPolicy, err = policy.RemoveHiddenLayerFragmentsByIDs(existingPolicy, idsToRemove)
 		if err != nil {
 			return err
 		}

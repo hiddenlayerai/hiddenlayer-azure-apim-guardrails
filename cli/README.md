@@ -83,6 +83,9 @@ HL_TARGET_API=default-api-id
 Fragments are organized into **packages** under `internal/policy/packages/`. Each package contains a `package.json` manifest (including `name`, `version`, `inbound`, `outbound`) and `.xml` fragment files. The CLI auto-discovers available packages at compile time via `//go:embed`.
 
 - Use `--package <name>` on `deploy`, `apply`, `status`, or `remove` to select a specific package.
+- Use `deploy --packages <a,b,c>` to deploy multiple packages in a single command.
+- Use `apply --packages <a,b,c>` to apply multiple packages in a single command.
+- Use `remove --packages <a,b,c>` to remove multiple packages in a single command.
 - Set `HL_PACKAGE` in your `.env` to set a default.
 - If only one package is available, it is auto-selected.
 - If multiple packages exist and no flag/env is set, an interactive menu is shown.
@@ -116,7 +119,9 @@ az deployment group create \
 
 ## How It Works
 
-This CLI deploys policy fragments that use the HiddenLayer v1 Interactions API:
+This CLI deploys policy fragments that use a HiddenLayer evaluation API, depending on the selected package.
+
+### v1 Interactions (`v1-interactions`)
 
 - **Single endpoint**: `POST /detection/v1/interactions` (called twice: once for input, once for output)
 
@@ -154,6 +159,25 @@ Optional override headers consumed by the input fragment and removed before call
 | `HL-Requester-Id` | Requester identifier (defaults to subscription key or IP) |
 
 The `HL-Runtime-Action` response header is set to `BLOCK` or empty for downstream clients.
+
+### v2-beta Evaluations (pass-through)
+
+Two packages support pass-through request/response evaluation where HiddenLayer returns a provider-shaped payload:
+
+- `v2-beta-request-evals`
+  - Calls `POST /detection/v2-beta/request-evaluation` in **inbound**
+  - Uses the `hl-runtime-action` response header from HiddenLayer to decide whether to block the backend call
+- `v2-beta-response-evals`
+  - Calls `POST /detection/v2-beta/response-evaluation` in **outbound**
+
+In both packages, the APIM policy sends `hl-runtime-edge-provider: azure-apim` to HiddenLayer. The policy surfaces the decision to clients as `HL-Runtime-Action: BLOCK` (or empty).
+
+The v2-beta evaluation packages also send `X-PolicyDefinition-Id` to HiddenLayer. This is currently a temporary compatibility hack; configure it via:
+
+- `HL_REQ_EVALS_POLICY_ID` (deployed to APIM as the named value `hl-req-evals-policy-id`) for `v2-beta-request-evals`
+- `HL_RESP_EVALS_POLICY_ID` (deployed to APIM as the named value `hl-resp-evals-policy-id`) for `v2-beta-response-evals`
+
+Migration note: `HL_POLICY_ID` / `hl-policy-id` are no longer used; set the new env vars and re-run `hiddenlayer-apim deploy`.
 
 ## Examples
 

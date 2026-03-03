@@ -33,6 +33,9 @@ func SelectPackage(flagValue string, r io.Reader, w io.Writer) (*Package, error)
 		} else {
 			entries[i] = menuEntry{Name: name, Version: m.Version, Desc: m.Description}
 		}
+		if req, ok := PolicyDefinitionIDRequirementForPackage(name); ok {
+			entries[i].Requires = fmt.Sprintf("%s (deploys named value: %s)", req.EnvVar, req.NamedValue)
+		}
 	}
 
 	selected, err := selectFromMenu(entries, r, w)
@@ -43,9 +46,10 @@ func SelectPackage(flagValue string, r io.Reader, w io.Writer) (*Package, error)
 }
 
 type menuEntry struct {
-	Name    string
-	Version string
-	Desc    string
+	Name     string
+	Version  string
+	Desc     string
+	Requires string
 }
 
 func selectFromMenu(entries []menuEntry, r io.Reader, w io.Writer) (string, error) {
@@ -63,6 +67,9 @@ func selectFromMenu(entries []menuEntry, r io.Reader, w io.Writer) (string, erro
 			fmt.Fprintf(w, "  %d) %s%s - %s\n", i+1, e.Name, versionSuffix, e.Desc)
 		} else {
 			fmt.Fprintf(w, "  %d) %s%s\n", i+1, e.Name, versionSuffix)
+		}
+		if e.Requires != "" {
+			fmt.Fprintf(w, "     Requires: %s\n", e.Requires)
 		}
 	}
 	fmt.Fprint(w, "Select package [1]: ")

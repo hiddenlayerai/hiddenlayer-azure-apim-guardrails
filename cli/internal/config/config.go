@@ -15,10 +15,13 @@ type Config struct {
 	SubscriptionID string
 
 	// HiddenLayer configuration
-	HLClientID     string
-	HLClientSecret string
-	HLProjectID    string
-	HLHost         string
+	HLClientID          string
+	HLClientSecret      string
+	HLProjectID         string
+	HLTenantID          string
+	HLReqEvalsPolicyID  string
+	HLRespEvalsPolicyID string
+	HLHost              string
 
 	TargetAPI string
 	HLPackage string
@@ -62,15 +65,18 @@ func LoadFrom(path string) (*Config, error) {
 
 func buildConfigFromEnv() *Config {
 	return &Config{
-		ResourceGroup:  os.Getenv("RG"),
-		APIMName:       os.Getenv("APIM_NAME"),
-		SubscriptionID: os.Getenv("AZURE_SUBSCRIPTION_ID"),
-		HLClientID:     os.Getenv("HL_CLIENT"),
-		HLClientSecret: os.Getenv("HL_SECRET"),
-		HLProjectID:    os.Getenv("HL_PROJECT_ID"),
-		HLHost:         os.Getenv("HL_HOST"),
-		TargetAPI:      os.Getenv("HL_TARGET_API"),
-		HLPackage:      os.Getenv("HL_PACKAGE"),
+		ResourceGroup:       os.Getenv("RG"),
+		APIMName:            os.Getenv("APIM_NAME"),
+		SubscriptionID:      os.Getenv("AZURE_SUBSCRIPTION_ID"),
+		HLClientID:          os.Getenv("HL_CLIENT"),
+		HLClientSecret:      os.Getenv("HL_SECRET"),
+		HLProjectID:         os.Getenv("HL_PROJECT_ID"),
+		HLTenantID:          os.Getenv("HL_TENANT_ID"),
+		HLReqEvalsPolicyID:  os.Getenv("HL_REQ_EVALS_POLICY_ID"),
+		HLRespEvalsPolicyID: os.Getenv("HL_RESP_EVALS_POLICY_ID"),
+		HLHost:              os.Getenv("HL_HOST"),
+		TargetAPI:           os.Getenv("HL_TARGET_API"),
+		HLPackage:           os.Getenv("HL_PACKAGE"),
 	}
 }
 
@@ -102,6 +108,9 @@ func (c *Config) ValidateHLCredentials() error {
 	}
 	if c.HLProjectID == "" {
 		return fmt.Errorf("hl_project_id (HL_PROJECT_ID) is required")
+	}
+	if c.HLTenantID == "" {
+		return fmt.Errorf("hl_tenant_id (HL_TENANT_ID) is required")
 	}
 	return nil
 }
