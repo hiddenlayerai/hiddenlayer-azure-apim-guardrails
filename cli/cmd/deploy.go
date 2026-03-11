@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -44,37 +42,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	pkgs, err := resolveDeployPackages(cmd)
 	if err != nil {
 		return err
-	}
-
-	envVarToValue := map[string]string{
-		"HL_REQ_EVALS_POLICY_ID":  cfg.HLReqEvalsPolicyID,
-		"HL_RESP_EVALS_POLICY_ID": cfg.HLRespEvalsPolicyID,
-	}
-
-	missingEnvVars := map[string][]string{}
-	for _, p := range pkgs {
-		req, ok := policy.PolicyDefinitionIDRequirementForPackage(p.Manifest.Name)
-		if !ok {
-			continue
-		}
-		if envVarToValue[req.EnvVar] == "" {
-			missingEnvVars[req.EnvVar] = append(missingEnvVars[req.EnvVar], p.Manifest.Name)
-		}
-	}
-	if len(missingEnvVars) > 0 {
-		var missingKeys []string
-		for k := range missingEnvVars {
-			missingKeys = append(missingKeys, k)
-		}
-		sort.Strings(missingKeys)
-
-		var parts []string
-		for _, envVar := range missingKeys {
-			pkgNames := missingEnvVars[envVar]
-			sort.Strings(pkgNames)
-			parts = append(parts, fmt.Sprintf("%s (for packages: %s)", envVar, strings.Join(pkgNames, ", ")))
-		}
-		return fmt.Errorf("missing required env var(s): %s", strings.Join(parts, "; "))
 	}
 
 	printHeader("Deploying HiddenLayer to APIM")
@@ -122,30 +89,7 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		{"hl-project-id", "hl-project-id", cfg.HLProjectID, false},
 		{"hl-host", "hl-host", cfg.HLHost, false},
 		{"hl-tenant-id", "hl-tenant-id", cfg.HLTenantID, false},
-	}
-
-	policyNamedValues := map[string]namedValueDef{}
-	for _, p := range pkgs {
-		req, ok := policy.PolicyDefinitionIDRequirementForPackage(p.Manifest.Name)
-		if !ok {
-			continue
-		}
-		policyNamedValues[req.NamedValue] = namedValueDef{
-			name:        req.NamedValue,
-			displayName: req.NamedValue,
-			value:       envVarToValue[req.EnvVar],
-			secret:      false,
-		}
-	}
-	if len(policyNamedValues) > 0 {
-		var keys []string
-		for k := range policyNamedValues {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			namedValues = append(namedValues, policyNamedValues[k])
-		}
+		{"hl-oauth-cache-seconds", "hl-oauth-cache-seconds", cfg.HLOAuthCacheSeconds, false},
 	}
 
 	for _, nv := range namedValues {

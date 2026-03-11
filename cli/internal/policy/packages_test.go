@@ -24,11 +24,11 @@ func TestListPackages(t *testing.T) {
 	if !found["v1-interactions"] {
 		t.Errorf("ListPackages() missing %q, got %v", "v1-interactions", names)
 	}
-	if !found["v2-beta-request-evals"] {
-		t.Errorf("ListPackages() missing %q, got %v", "v2-beta-request-evals", names)
+	if !found["v2-request-evals"] {
+		t.Errorf("ListPackages() missing %q, got %v", "v2-request-evals", names)
 	}
-	if !found["v2-beta-response-evals"] {
-		t.Errorf("ListPackages() missing %q, got %v", "v2-beta-response-evals", names)
+	if !found["v2-response-evals"] {
+		t.Errorf("ListPackages() missing %q, got %v", "v2-response-evals", names)
 	}
 	if found["test-fixture"] {
 		t.Errorf("ListPackages() should not contain test-fixture; test fixtures belong in testdata/")

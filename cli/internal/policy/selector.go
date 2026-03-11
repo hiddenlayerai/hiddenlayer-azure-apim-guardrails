@@ -33,9 +33,6 @@ func SelectPackage(flagValue string, r io.Reader, w io.Writer) (*Package, error)
 		} else {
 			entries[i] = menuEntry{Name: name, Version: m.Version, Desc: m.Description}
 		}
-		if req, ok := PolicyDefinitionIDRequirementForPackage(name); ok {
-			entries[i].Requires = fmt.Sprintf("%s (deploys named value: %s)", req.EnvVar, req.NamedValue)
-		}
 	}
 
 	selected, err := selectFromMenu(entries, r, w)

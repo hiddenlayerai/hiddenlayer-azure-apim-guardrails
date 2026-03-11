@@ -91,10 +91,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	printInfo("Checking APIM named values...")
-	namedValues := []string{"hl-client-id", "hl-client-secret", "hl-project-id", "hl-host"}
-	if req, ok := policy.PolicyDefinitionIDRequirementForPackage(pkg.Manifest.Name); ok {
-		namedValues = append(namedValues, req.NamedValue)
-	}
+	namedValues := []string{"hl-client-id", "hl-client-secret", "hl-project-id", "hl-host", "hl-tenant-id", "hl-oauth-cache-seconds"}
 	for _, nv := range namedValues {
 		value, err := client.GetNamedValue(nv)
 		if err != nil {

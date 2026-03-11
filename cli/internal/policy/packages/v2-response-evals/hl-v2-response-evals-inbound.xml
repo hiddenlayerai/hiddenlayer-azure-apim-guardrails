@@ -1,5 +1,5 @@
 <fragment>
-    <!-- HiddenLayer v2-beta Response Evaluations – Inbound Setup -->
+    <!-- HiddenLayer v2 Response Evaluations – Inbound Setup -->
     <set-variable name="hl_runtime_action" value='@("")' />
     <set-variable name="hl_original_body" value="@(context.Request.Body.As&lt;string&gt;(preserveContent: true))" />
     <set-header name="HL-Model" exists-action="delete" />

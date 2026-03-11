@@ -10,9 +10,9 @@ func TestNormalizeUniquePackageNames_DedupesAndErrors(t *testing.T) {
 	if _, err := normalizeUniquePackageNames([]string{"v1-interactions", "v1-interactions"}); err == nil {
 		t.Fatal("expected duplicate package error")
 	}
-	if got, err := normalizeUniquePackageNames([]string{"  v1-interactions  ", "", "v2-beta-request-evals"}); err != nil {
+	if got, err := normalizeUniquePackageNames([]string{"  v1-interactions  ", "", "v2-request-evals"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	} else if len(got) != 2 || got[0] != "v1-interactions" || got[1] != "v2-beta-request-evals" {
+	} else if len(got) != 2 || got[0] != "v1-interactions" || got[1] != "v2-request-evals" {
 		t.Fatalf("unexpected normalized result: %v", got)
 	}
 }
@@ -20,7 +20,7 @@ func TestNormalizeUniquePackageNames_DedupesAndErrors(t *testing.T) {
 func TestResolveApplyPackages_LoadsMultiple(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.Flags().StringSlice("packages", nil, "")
-	if err := cmd.Flags().Set("packages", "v1-interactions,v2-beta-request-evals"); err != nil {
+	if err := cmd.Flags().Set("packages", "v1-interactions,v2-request-evals"); err != nil {
 		t.Fatalf("set packages: %v", err)
 	}
 
@@ -34,8 +34,8 @@ func TestResolveApplyPackages_LoadsMultiple(t *testing.T) {
 	if pkgs[0].Manifest.Name != "v1-interactions" {
 		t.Fatalf("pkg[0] = %q, want %q", pkgs[0].Manifest.Name, "v1-interactions")
 	}
-	if pkgs[1].Manifest.Name != "v2-beta-request-evals" {
-		t.Fatalf("pkg[1] = %q, want %q", pkgs[1].Manifest.Name, "v2-beta-request-evals")
+	if pkgs[1].Manifest.Name != "v2-request-evals" {
+		t.Fatalf("pkg[1] = %q, want %q", pkgs[1].Manifest.Name, "v2-request-evals")
 	}
 }
 

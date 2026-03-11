@@ -118,18 +118,18 @@ func mustLoadV1(t *testing.T) *Package {
 
 func mustLoadV2RequestEvals(t *testing.T) *Package {
 	t.Helper()
-	pkg, err := LoadPackage("v2-beta-request-evals")
+	pkg, err := LoadPackage("v2-request-evals")
 	if err != nil {
-		t.Fatalf("failed to load v2-beta-request-evals: %v", err)
+		t.Fatalf("failed to load v2-request-evals: %v", err)
 	}
 	return pkg
 }
 
 func mustLoadV2ResponseEvals(t *testing.T) *Package {
 	t.Helper()
-	pkg, err := LoadPackage("v2-beta-response-evals")
+	pkg, err := LoadPackage("v2-response-evals")
 	if err != nil {
-		t.Fatalf("failed to load v2-beta-response-evals: %v", err)
+		t.Fatalf("failed to load v2-response-evals: %v", err)
 	}
 	return pkg
 }
@@ -300,7 +300,7 @@ func TestInjectHiddenLayerFragments_MultiplePackages_NoDuplicateCorrelationId(t 
 	}
 
 	oauthPos := strings.Index(withAB, `fragment-id="hl-oauth-token-management"`)
-	reqPos := strings.Index(withAB, `fragment-id="hl-v2beta-request-evaluations"`)
+	reqPos := strings.Index(withAB, `fragment-id="hl-v2-request-evaluations"`)
 	if oauthPos == -1 || reqPos == -1 {
 		t.Fatalf("expected oauth and request eval fragments to be present (oauth=%d, request=%d)", oauthPos, reqPos)
 	}
@@ -437,21 +437,21 @@ func TestRemoveHiddenLayerFragmentsByIDs_PartialRemovalPreservesCorrelationWhenH
         <!-- Generate correlation ID for request tracking -->
         <set-variable name="correlationId" value="@(context.RequestId.ToString())" />
         <include-fragment fragment-id="hl-oauth-token-management" />
-        <include-fragment fragment-id="hl-v2beta-request-evaluations" />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
     </inbound>
     <backend>
         <base />
     </backend>
     <outbound>
         <base />
-        <include-fragment fragment-id="hl-v2beta-response-evaluations" />
+        <include-fragment fragment-id="hl-v2-response-evaluations" />
     </outbound>
     <on-error>
         <base />
     </on-error>
 </policies>`
 
-	result, err := RemoveHiddenLayerFragmentsByIDs(policyWithMultipleHL, []string{"hl-v2beta-request-evaluations"})
+	result, err := RemoveHiddenLayerFragmentsByIDs(policyWithMultipleHL, []string{"hl-v2-request-evaluations"})
 	if err != nil {
 		t.Fatalf("RemoveHiddenLayerFragmentsByIDs() error = %v", err)
 	}
@@ -461,7 +461,7 @@ func TestRemoveHiddenLayerFragmentsByIDs_PartialRemovalPreservesCorrelationWhenH
 	if !strings.Contains(result, `fragment-id="hl-oauth-token-management"`) {
 		t.Fatal("expected shared oauth fragment include to remain")
 	}
-	if !strings.Contains(result, `fragment-id="hl-v2beta-response-evaluations"`) {
+	if !strings.Contains(result, `fragment-id="hl-v2-response-evaluations"`) {
 		t.Fatal("expected other HL fragment include to remain")
 	}
 }
@@ -470,7 +470,7 @@ func TestInjectHiddenLayerFragments_ReordersOAuthBeforeOtherHLFragments(t *testi
 	const misordered = `<policies>
     <inbound>
         <base />
-        <include-fragment fragment-id="hl-v2beta-request-evaluations" />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
         <include-fragment fragment-id="hl-oauth-token-management" />
     </inbound>
     <backend>
@@ -491,7 +491,7 @@ func TestInjectHiddenLayerFragments_ReordersOAuthBeforeOtherHLFragments(t *testi
 	}
 
 	oauthPos := strings.Index(fixed, `fragment-id="hl-oauth-token-management"`)
-	reqPos := strings.Index(fixed, `fragment-id="hl-v2beta-request-evaluations"`)
+	reqPos := strings.Index(fixed, `fragment-id="hl-v2-request-evaluations"`)
 	if oauthPos == -1 || reqPos == -1 {
 		t.Fatalf("expected oauth and request eval fragments to be present (oauth=%d, request=%d)", oauthPos, reqPos)
 	}
@@ -505,7 +505,7 @@ func TestInjectHiddenLayerFragments_RepairsMissingCorrelationId(t *testing.T) {
     <inbound>
         <base />
         <include-fragment fragment-id="hl-oauth-token-management" />
-        <include-fragment fragment-id="hl-v2beta-request-evaluations" />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
     </inbound>
     <backend>
         <base />
@@ -532,7 +532,7 @@ func TestInjectHiddenLayerFragments_InsertsCorrelationBeforeHLFragments_WhenBase
 	const baseAfterFragments = `<policies>
     <inbound>
         <include-fragment fragment-id="hl-oauth-token-management" />
-        <include-fragment fragment-id="hl-v2beta-request-evaluations" />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
         <base />
     </inbound>
     <backend>
@@ -567,7 +567,7 @@ func TestInjectHiddenLayerFragments_ReordersCorrelationBeforeHLFragments(t *test
     <inbound>
         <base />
         <include-fragment fragment-id="hl-oauth-token-management" />
-        <include-fragment fragment-id="hl-v2beta-request-evaluations" />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
         <!-- Generate correlation ID for request tracking -->
         <set-variable name="correlationId" value="@(context.RequestId.ToString())" />
     </inbound>

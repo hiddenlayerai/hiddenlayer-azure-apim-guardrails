@@ -9,7 +9,7 @@ import (
 func TestResolveDeployPackages_LoadsMultiple(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.Flags().StringSlice("packages", nil, "")
-	if err := cmd.Flags().Set("packages", "v1-interactions,v2-beta-request-evals"); err != nil {
+	if err := cmd.Flags().Set("packages", "v1-interactions,v2-request-evals"); err != nil {
 		t.Fatalf("set packages: %v", err)
 	}
 
@@ -23,8 +23,8 @@ func TestResolveDeployPackages_LoadsMultiple(t *testing.T) {
 	if pkgs[0].Manifest.Name != "v1-interactions" {
 		t.Fatalf("pkg[0] = %q, want %q", pkgs[0].Manifest.Name, "v1-interactions")
 	}
-	if pkgs[1].Manifest.Name != "v2-beta-request-evals" {
-		t.Fatalf("pkg[1] = %q, want %q", pkgs[1].Manifest.Name, "v2-beta-request-evals")
+	if pkgs[1].Manifest.Name != "v2-request-evals" {
+		t.Fatalf("pkg[1] = %q, want %q", pkgs[1].Manifest.Name, "v2-request-evals")
 	}
 }
 

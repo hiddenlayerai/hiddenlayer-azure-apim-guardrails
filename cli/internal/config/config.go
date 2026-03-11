@@ -19,9 +19,8 @@ type Config struct {
 	HLClientSecret      string
 	HLProjectID         string
 	HLTenantID          string
-	HLReqEvalsPolicyID  string
-	HLRespEvalsPolicyID string
 	HLHost              string
+	HLOAuthCacheSeconds string
 
 	TargetAPI string
 	HLPackage string
@@ -72,9 +71,8 @@ func buildConfigFromEnv() *Config {
 		HLClientSecret:      os.Getenv("HL_SECRET"),
 		HLProjectID:         os.Getenv("HL_PROJECT_ID"),
 		HLTenantID:          os.Getenv("HL_TENANT_ID"),
-		HLReqEvalsPolicyID:  os.Getenv("HL_REQ_EVALS_POLICY_ID"),
-		HLRespEvalsPolicyID: os.Getenv("HL_RESP_EVALS_POLICY_ID"),
 		HLHost:              os.Getenv("HL_HOST"),
+		HLOAuthCacheSeconds: os.Getenv("HL_OAUTH_CACHE_SECONDS"),
 		TargetAPI:           os.Getenv("HL_TARGET_API"),
 		HLPackage:           os.Getenv("HL_PACKAGE"),
 	}
@@ -83,6 +81,9 @@ func buildConfigFromEnv() *Config {
 func (c *Config) normalizeConfig() {
 	if c.HLHost == "" {
 		c.HLHost = "hiddenlayer.ai"
+	}
+	if c.HLOAuthCacheSeconds == "" {
+		c.HLOAuthCacheSeconds = "5"
 	}
 }
 

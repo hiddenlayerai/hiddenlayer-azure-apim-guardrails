@@ -39,7 +39,7 @@
                             <choose>
                                 <when condition='@(!string.IsNullOrEmpty((string)context.Variables["access_token"]))'>
                                     <set-variable name="hl_access_token_len" value='@(((string)context.Variables["access_token"]).Length)' />
-                                    <cache-store-value key="aad-ccg-token" value='@((string)context.Variables["access_token"])' duration='@(Math.Max(60, (int)context.Variables["expires_in"] - 60))' />
+                                    <cache-store-value key="aad-ccg-token" value='@((string)context.Variables["access_token"])' duration="{{hl-oauth-cache-seconds}}" />
                                 </when>
                                 <otherwise>
                                     <set-variable name="access_token" value='@((string)context.Variables.GetValueOrDefault("ccg_token", ""))' />

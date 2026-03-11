@@ -21,3 +21,5 @@ cli/coverage.out
 .DS_Store
 
 specs/*
+cli/internal/policy/packages/v3-request-evals/
+cli/internal/policy/packages/v3-response-evals/

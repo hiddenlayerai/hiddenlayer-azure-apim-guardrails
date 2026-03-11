@@ -42,12 +42,11 @@ HL_SECRET=your-client-secret
 # HiddenLayer Project ID (used by HiddenLayer evaluation endpoints)
 HL_PROJECT_ID=your-project-id
 
-# ===== Optional =====
-# TODO(remove-policydefinition-id-hack): remove these once v2-beta evaluation endpoints no longer require X-PolicyDefinition-Id.
-# HiddenLayer Policy IDs (sent as X-PolicyDefinition-Id to v2-beta evaluation endpoints)
-# HL_REQ_EVALS_POLICY_ID=your-policy-id
-# HL_RESP_EVALS_POLICY_ID=your-policy-id
+# Optional: OAuth token cache duration (seconds) for APIM internal cache
+# Default: 5
+# HL_OAUTH_CACHE_SECONDS=5
 
+# ===== Optional =====
 # HiddenLayer host suffix for all endpoints (auth.<host>, api.<host>)
 # HL_HOST=hiddenlayer.ai
 
@@ -56,8 +55,8 @@ HL_PROJECT_ID=your-project-id
 
 # Fragment package to use (see available packages with 'deploy --help')
 # HL_PACKAGE=v1-interactions
-# HL_PACKAGE=v2-beta-request-evals
-# HL_PACKAGE=v2-beta-response-evals
+# HL_PACKAGE=v2-request-evals
+# HL_PACKAGE=v2-response-evals
 `
 
 func runInit(cmd *cobra.Command, args []string) error {

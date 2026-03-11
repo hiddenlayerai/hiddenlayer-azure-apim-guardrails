@@ -75,6 +75,7 @@ HL_SECRET=your-client-secret
 HL_PROJECT_ID=your-project-id
 
 # Optional
+HL_OAUTH_CACHE_SECONDS=5
 HL_TARGET_API=default-api-id
 ```
 
@@ -160,24 +161,17 @@ Optional override headers consumed by the input fragment and removed before call
 
 The `HL-Runtime-Action` response header is set to `BLOCK` or empty for downstream clients.
 
-### v2-beta Evaluations (pass-through)
+### v2 Evaluations (pass-through)
 
 Two packages support pass-through request/response evaluation where HiddenLayer returns a provider-shaped payload:
 
-- `v2-beta-request-evals`
-  - Calls `POST /detection/v2-beta/request-evaluation` in **inbound**
+- `v2-request-evals`
+  - Calls `POST /detection/v2/request-evaluations` in **inbound**
   - Uses the `hl-runtime-action` response header from HiddenLayer to decide whether to block the backend call
-- `v2-beta-response-evals`
-  - Calls `POST /detection/v2-beta/response-evaluation` in **outbound**
+- `v2-response-evals`
+  - Calls `POST /detection/v2/response-evaluations` in **outbound**
 
 In both packages, the APIM policy sends `hl-runtime-edge-provider: azure-apim` to HiddenLayer. The policy surfaces the decision to clients as `HL-Runtime-Action: BLOCK` (or empty).
-
-The v2-beta evaluation packages also send `X-PolicyDefinition-Id` to HiddenLayer. This is currently a temporary compatibility hack; configure it via:
-
-- `HL_REQ_EVALS_POLICY_ID` (deployed to APIM as the named value `hl-req-evals-policy-id`) for `v2-beta-request-evals`
-- `HL_RESP_EVALS_POLICY_ID` (deployed to APIM as the named value `hl-resp-evals-policy-id`) for `v2-beta-response-evals`
-
-Migration note: `HL_POLICY_ID` / `hl-policy-id` are no longer used; set the new env vars and re-run `hiddenlayer-apim deploy`.
 
 ## Examples
 

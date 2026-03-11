@@ -1,7 +1,0 @@
-{
-    "name": "v2-beta-request-evals",
-    "version": "1.0.0",
-    "description": "HiddenLayer v2-beta request evaluations (allow/redact/block)",
-    "inbound": ["hl-oauth-token-management", "hl-v2beta-request-evaluations"],
-    "outbound": ["hl-v2beta-surface-runtime-action"]
-}
