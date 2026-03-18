@@ -25,6 +25,29 @@ go install github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails/cli@latest
 
 Download from the [releases page](https://github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails/releases).
 
+### Quick Start (Pre-built Binary)
+
+```bash
+# 1. Download the correct release asset for your platform
+# Example:
+curl -L -o hiddenlayer-apim https://github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails/releases/latest/download/hiddenlayer-apim-darwin-arm64
+
+# 2. Make it executable
+chmod +x ./hiddenlayer-apim
+
+# 3. Verify the binary works
+./hiddenlayer-apim version
+
+# 4. Initialize configuration
+./hiddenlayer-apim init
+
+# 5. Edit .env with your Azure and HiddenLayer credentials
+vim .env
+
+# 6. Deploy policy fragments to APIM
+./hiddenlayer-apim deploy
+```
+
 ## Quick Start
 
 ```bash
