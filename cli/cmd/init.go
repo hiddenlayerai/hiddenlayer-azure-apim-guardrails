@@ -42,6 +42,9 @@ HL_SECRET=your-client-secret
 # HiddenLayer Project ID (used by HiddenLayer evaluation endpoints)
 HL_PROJECT_ID=your-project-id
 
+# HiddenLayer Tenant ID
+HL_TENANT_ID=your-tenant-id
+
 # Optional: OAuth token cache duration (seconds) for APIM internal cache
 # Default: 5
 # HL_OAUTH_CACHE_SECONDS=5

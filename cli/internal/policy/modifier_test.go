@@ -159,6 +159,30 @@ func TestHasHiddenLayerFragments(t *testing.T) {
 	}
 }
 
+func TestHasHiddenLayerFragments_RequiresFullPackage(t *testing.T) {
+	pkg := mustLoadV2RequestEvals(t)
+
+	policyWithSharedOnly := `<policies>
+    <inbound>
+        <base />
+        <include-fragment fragment-id="hl-oauth-token-management" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>`
+
+	if HasHiddenLayerFragments(policyWithSharedOnly, pkg) {
+		t.Fatal("expected shared oauth fragment alone to be insufficient for package detection")
+	}
+}
+
 func TestGetPresentFragments(t *testing.T) {
 	pkg := mustLoadV1(t)
 

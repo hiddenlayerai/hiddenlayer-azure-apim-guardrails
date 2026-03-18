@@ -73,6 +73,7 @@ APIM_NAME=your-apim-instance
 HL_CLIENT=your-client-id
 HL_SECRET=your-client-secret
 HL_PROJECT_ID=your-project-id
+HL_TENANT_ID=your-tenant-id
 
 # Optional
 HL_OAUTH_CACHE_SECONDS=5

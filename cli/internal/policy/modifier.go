@@ -23,15 +23,15 @@ type ParsedPolicy struct {
 	Raw      string
 }
 
-// HasHiddenLayerFragments checks if the policy contains any of the package's fragments.
+// HasHiddenLayerFragments checks if the policy contains all fragments required by the package.
 func HasHiddenLayerFragments(policyXML string, pkg *Package) bool {
 	for _, fragID := range pkg.AllFragmentIDs() {
 		pattern := fmt.Sprintf(`<include-fragment\s+fragment-id="%s"\s*/>`, regexp.QuoteMeta(fragID))
-		if matched, _ := regexp.MatchString(pattern, policyXML); matched {
-			return true
+		if matched, _ := regexp.MatchString(pattern, policyXML); !matched {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func GetPresentFragments(policyXML string, pkg *Package) []string {
