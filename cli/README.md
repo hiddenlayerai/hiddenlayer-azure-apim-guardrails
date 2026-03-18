@@ -47,6 +47,34 @@ hiddenlayer-apim list
 hiddenlayer-apim apply my-openai-api
 ```
 
+### Quick Start With Release Bicep Templates
+
+Some customers may prefer to deploy the pre-built Bicep bundles published in GitHub releases instead of running the CLI locally.
+
+1. Download and extract the Bicep bundle from the desired GitHub release asset.
+2. Review and update `main.bicepparam` for your APIM environment.
+3. Use Azure CLI to preview and deploy the template:
+
+```bash
+# Authenticate and select the target subscription
+az login
+az account set --subscription "<subscription-id>"
+
+# Preview the deployment
+az deployment group what-if \
+  --resource-group <rg> \
+  --template-file ./hl-bicep/main.bicep \
+  --parameters ./hl-bicep/main.bicepparam
+
+# Deploy the fragments
+az deployment group create \
+  --resource-group <rg> \
+  --template-file ./hl-bicep/main.bicep \
+  --parameters ./hl-bicep/main.bicepparam
+```
+
+After deployment completes, the fragments are available in API Management and can be referenced from API policies.
+
 ## Commands
 
 | Command | Description |
@@ -119,6 +147,8 @@ az deployment group create \
   --parameters ./hl-bicep/main.bicepparam
 ```
 
+The same Azure CLI workflow applies to pre-built Bicep bundles downloaded from GitHub releases: extract the bundle, review `main.bicepparam`, then deploy `main.bicep` with `az deployment group create`.
+
 ## How It Works
 
 This CLI deploys policy fragments that use a HiddenLayer evaluation API, depending on the selected package.
@@ -158,7 +188,7 @@ Optional override headers consumed by the input fragment and removed before call
 |--------|-------------|
 | `HL-Model` | Override model identifier (otherwise read from request body) |
 | `HL-Provider` | Provider name used by `v1-interactions` (defaults to `azure-apim`) |
-| `HL-Runtime-Edge-Provider` | Edge provider name used by `v2`/`v3` eval packages (defaults to `azure-apim`) |
+| `HL-Runtime-Edge-Provider` | Edge provider name used by the bundled `v2` eval packages (defaults to `azure-apim`) |
 | `HL-Requester-Id` | Requester identifier (defaults to subscription key or IP) |
 | `Hl-Runtime-Session-Id` | Optional session/conversation identifier consumed by the policy and not forwarded to the backend |
 

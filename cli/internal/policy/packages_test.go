@@ -286,8 +286,6 @@ func TestEvalFragments_ContainProviderVersionHeader(t *testing.T) {
 	}{
 		{"v2-request-evals", "hl-v2-request-evaluations"},
 		{"v2-response-evals", "hl-v2-response-evaluations"},
-		{"v3-request-evals", "hl-v3-request-evaluations"},
-		{"v3-response-evals", "hl-v3-response-evaluations"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
@@ -307,8 +305,6 @@ func TestEvalFragments_ContainRuntimeEdgeProviderHeader(t *testing.T) {
 	}{
 		{"v2-request-evals", "hl-v2-request-evaluations"},
 		{"v2-response-evals", "hl-v2-response-evaluations"},
-		{"v3-request-evals", "hl-v3-request-evaluations"},
-		{"v3-response-evals", "hl-v3-response-evaluations"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
@@ -334,8 +330,6 @@ func TestEvalFragments_ContainMetadataHeader(t *testing.T) {
 	}{
 		{"v2-request-evals", "hl-v2-request-evaluations"},
 		{"v2-response-evals", "hl-v2-response-evaluations"},
-		{"v3-request-evals", "hl-v3-request-evaluations"},
-		{"v3-response-evals", "hl-v3-response-evaluations"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
@@ -362,8 +356,6 @@ func TestEvalFragments_ContainSessionIdHeader(t *testing.T) {
 	}{
 		{"v2-request-evals", "hl-v2-request-evaluations"},
 		{"v2-response-evals", "hl-v2-response-evaluations"},
-		{"v3-request-evals", "hl-v3-request-evaluations"},
-		{"v3-response-evals", "hl-v3-response-evaluations"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
@@ -385,7 +377,6 @@ func TestRequestEvalFragments_CaptureThenDeleteSessionIdHeader(t *testing.T) {
 		fragmentID string
 	}{
 		{"v2-request-evals", "hl-v2-request-evaluations"},
-		{"v3-request-evals", "hl-v3-request-evaluations"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
@@ -405,7 +396,6 @@ func TestRequestEvalFragments_CaptureThenDeleteRuntimeEdgeProviderHeader(t *test
 		fragmentID string
 	}{
 		{"v2-request-evals", "hl-v2-request-evaluations"},
-		{"v3-request-evals", "hl-v3-request-evaluations"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
@@ -419,22 +409,12 @@ func TestRequestEvalFragments_CaptureThenDeleteRuntimeEdgeProviderHeader(t *test
 	}
 }
 
-func TestV3RequestEvalFragment_PreservesCapturedProjectID(t *testing.T) {
-	xml := mustGetFragmentXML(t, "v3-request-evals", "hl-v3-request-evaluations")
-	assertContainsAll(t, xml, "hl-v3-request-evaluations", []string{
-		`context.Variables.GetValueOrDefault("hl_project_id", "")`,
-		`context.Request.Headers.GetValueOrDefault("HL-Project-Id", "")`,
-	})
-	assertOrder(t, xml, "hl-v3-request-evaluations", `context.Variables.GetValueOrDefault("hl_project_id", "")`, `context.Request.Headers.GetValueOrDefault("HL-Project-Id", "")`)
-}
-
 func TestResponseEvalInboundFragments_CaptureThenDeleteSessionIdHeader(t *testing.T) {
 	tests := []struct {
 		pkg        string
 		fragmentID string
 	}{
 		{"v2-response-evals", "hl-v2-response-evals-inbound"},
-		{"v3-response-evals", "hl-v3-response-evals-inbound"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
@@ -453,7 +433,6 @@ func TestResponseEvalInboundFragments_CaptureThenDeleteRuntimeEdgeProviderHeader
 		fragmentID string
 	}{
 		{"v2-response-evals", "hl-v2-response-evals-inbound"},
-		{"v3-response-evals", "hl-v3-response-evals-inbound"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
