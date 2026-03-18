@@ -43,14 +43,35 @@
                 <set-header name="X-Correlation-Id" exists-action="override">
                     <value>@((string)context.Variables.GetValueOrDefault("correlationId", ""))</value>
                 </set-header>
-                <set-header name="hl-runtime-edge-provider" exists-action="override">
-                    <value>azure-apim</value>
+                <set-header name="HL-Runtime-Edge-Provider" exists-action="override">
+                    <value>@((string)context.Variables.GetValueOrDefault("hl_runtime_edge_provider", "azure-apim"))</value>
                 </set-header>
                 <set-header name="X-Tenant-Id" exists-action="override">
                     <value>@((string)context.Variables["hl_tenant_id"])</value>
                 </set-header>
                 <set-header name="hl-roundtrip-id" exists-action="override">
                     <value>@((string)context.Variables.GetValueOrDefault("hl_roundtrip_id", ""))</value>
+                </set-header>
+                <set-header name="HL-Runtime-Edge-Provider-Version" exists-action="override">
+                    <value>0.1</value>
+                </set-header>
+                <set-header name="HL-Runtime-Edge-Provider-Metadata" exists-action="override">
+                    <value>@{
+                        var metadata = new JObject(
+                            new JProperty("apiName", context.Api.Name ?? ""),
+                            new JProperty("apiVersion", context.Api.Version ?? ""),
+                            new JProperty("serviceName", context.Deployment.ServiceName ?? ""),
+                            new JProperty("region", context.Deployment.Region ?? ""),
+                            new JProperty("apiId", context.Api.Id ?? ""),
+                            new JProperty("apiRevision", context.Api.Revision ?? ""),
+                            new JProperty("subscriptionName", context.Subscription != null ? context.Subscription.Name : ""),
+                            new JProperty("operationId", context.Operation?.Id ?? "")
+                        );
+                        return metadata.ToString(Newtonsoft.Json.Formatting.None);
+                    }</value>
+                </set-header>
+                <set-header name="Hl-Runtime-Session-Id" exists-action="override">
+                    <value>@((string)context.Variables.GetValueOrDefault("hl_runtime_session_id", ""))</value>
                 </set-header>
                 <set-body>@((string)context.Variables["hl_original_response"])</set-body>
             </send-request>

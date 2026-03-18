@@ -238,3 +238,230 @@ func TestPackageManifestJSON_WithoutVersion(t *testing.T) {
 		t.Errorf("Version = %q, want empty string", m.Version)
 	}
 }
+
+func mustGetFragmentXML(t *testing.T, packageName, fragmentID string) string {
+	t.Helper()
+
+	pkg, err := LoadPackage(packageName)
+	if err != nil {
+		t.Fatalf("LoadPackage(%q) error = %v", packageName, err)
+	}
+	xml, ok := pkg.GetFragmentXML(fragmentID)
+	if !ok {
+		t.Fatalf("GetFragmentXML(%q) returned false", fragmentID)
+	}
+	return xml
+}
+
+func assertContainsAll(t *testing.T, xml, fragmentID string, values []string) {
+	t.Helper()
+
+	for _, value := range values {
+		if !strings.Contains(xml, value) {
+			t.Errorf("fragment %q missing %q", fragmentID, value)
+		}
+	}
+}
+
+func assertOrder(t *testing.T, xml, fragmentID, first, second string) {
+	t.Helper()
+
+	firstIdx := strings.Index(xml, first)
+	if firstIdx == -1 {
+		t.Fatalf("fragment %q missing %q", fragmentID, first)
+	}
+	secondIdx := strings.Index(xml, second)
+	if secondIdx == -1 {
+		t.Fatalf("fragment %q missing %q", fragmentID, second)
+	}
+	if firstIdx >= secondIdx {
+		t.Errorf("fragment %q should place %q before %q", fragmentID, first, second)
+	}
+}
+
+func TestEvalFragments_ContainProviderVersionHeader(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-request-evals", "hl-v2-request-evaluations"},
+		{"v2-response-evals", "hl-v2-response-evaluations"},
+		{"v3-request-evals", "hl-v3-request-evaluations"},
+		{"v3-response-evals", "hl-v3-response-evaluations"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			assertContainsAll(t, xml, tt.fragmentID, []string{
+				"HL-Runtime-Edge-Provider-Version",
+				"<value>0.1</value>",
+			})
+		})
+	}
+}
+
+func TestEvalFragments_ContainRuntimeEdgeProviderHeader(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-request-evals", "hl-v2-request-evaluations"},
+		{"v2-response-evals", "hl-v2-response-evaluations"},
+		{"v3-request-evals", "hl-v3-request-evaluations"},
+		{"v3-response-evals", "hl-v3-response-evaluations"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			assertContainsAll(t, xml, tt.fragmentID, []string{
+				`<set-header name="HL-Runtime-Edge-Provider" exists-action="override">`,
+				`<value>@((string)context.Variables.GetValueOrDefault("hl_runtime_edge_provider", "azure-apim"))</value>`,
+			})
+			if strings.Contains(xml, "hl-runtime-edge-provider") {
+				t.Errorf("fragment %q should not use lowercase hl-runtime-edge-provider header name", tt.fragmentID)
+			}
+			if strings.Contains(xml, "HL-Provider") {
+				t.Errorf("fragment %q should not reference HL-Provider", tt.fragmentID)
+			}
+		})
+	}
+}
+
+func TestEvalFragments_ContainMetadataHeader(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-request-evals", "hl-v2-request-evaluations"},
+		{"v2-response-evals", "hl-v2-response-evaluations"},
+		{"v3-request-evals", "hl-v3-request-evaluations"},
+		{"v3-response-evals", "hl-v3-response-evaluations"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			expectedFields := []string{
+				"HL-Runtime-Edge-Provider-Metadata",
+				"context.Api.Name",
+				"context.Api.Version",
+				"context.Deployment.ServiceName",
+				"context.Deployment.Region",
+				"context.Api.Id",
+				"context.Api.Revision",
+				"context.Operation",
+			}
+			assertContainsAll(t, xml, tt.fragmentID, expectedFields)
+		})
+	}
+}
+
+func TestEvalFragments_ContainSessionIdHeader(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-request-evals", "hl-v2-request-evaluations"},
+		{"v2-response-evals", "hl-v2-response-evaluations"},
+		{"v3-request-evals", "hl-v3-request-evaluations"},
+		{"v3-response-evals", "hl-v3-response-evaluations"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			assertContainsAll(t, xml, tt.fragmentID, []string{
+				`<set-header name="Hl-Runtime-Session-Id" exists-action="override">`,
+				`<value>@((string)context.Variables.GetValueOrDefault("hl_runtime_session_id", ""))</value>`,
+			})
+			if strings.Contains(xml, "context.RequestId") {
+				t.Errorf("fragment %q should not fall back to context.RequestId", tt.fragmentID)
+			}
+		})
+	}
+}
+
+func TestRequestEvalFragments_CaptureThenDeleteSessionIdHeader(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-request-evals", "hl-v2-request-evaluations"},
+		{"v3-request-evals", "hl-v3-request-evaluations"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			capture := `context.Variables.GetValueOrDefault("hl_runtime_session_id", "")`
+			headerFallback := `context.Request.Headers.GetValueOrDefault("Hl-Runtime-Session-Id", "")`
+			deleteHeader := `<set-header name="Hl-Runtime-Session-Id" exists-action="delete" />`
+			assertContainsAll(t, xml, tt.fragmentID, []string{capture, headerFallback, deleteHeader})
+			assertOrder(t, xml, tt.fragmentID, capture, headerFallback)
+		})
+	}
+}
+
+func TestRequestEvalFragments_CaptureThenDeleteRuntimeEdgeProviderHeader(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-request-evals", "hl-v2-request-evaluations"},
+		{"v3-request-evals", "hl-v3-request-evaluations"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			capture := `context.Variables.GetValueOrDefault("hl_runtime_edge_provider", "")`
+			headerFallback := `context.Request.Headers.GetValueOrDefault("HL-Runtime-Edge-Provider", "azure-apim")`
+			deleteHeader := `<set-header name="HL-Runtime-Edge-Provider" exists-action="delete" />`
+			assertContainsAll(t, xml, tt.fragmentID, []string{capture, headerFallback, deleteHeader})
+			assertOrder(t, xml, tt.fragmentID, capture, headerFallback)
+		})
+	}
+}
+
+func TestV3RequestEvalFragment_PreservesCapturedProjectID(t *testing.T) {
+	xml := mustGetFragmentXML(t, "v3-request-evals", "hl-v3-request-evaluations")
+	assertContainsAll(t, xml, "hl-v3-request-evaluations", []string{
+		`context.Variables.GetValueOrDefault("hl_project_id", "")`,
+		`context.Request.Headers.GetValueOrDefault("HL-Project-Id", "")`,
+	})
+	assertOrder(t, xml, "hl-v3-request-evaluations", `context.Variables.GetValueOrDefault("hl_project_id", "")`, `context.Request.Headers.GetValueOrDefault("HL-Project-Id", "")`)
+}
+
+func TestResponseEvalInboundFragments_CaptureThenDeleteSessionIdHeader(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-response-evals", "hl-v2-response-evals-inbound"},
+		{"v3-response-evals", "hl-v3-response-evals-inbound"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			capture := `<set-variable name="hl_runtime_session_id" value='@(context.Request.Headers.GetValueOrDefault("Hl-Runtime-Session-Id", ""))' />`
+			deleteHeader := `<set-header name="Hl-Runtime-Session-Id" exists-action="delete" />`
+			assertContainsAll(t, xml, tt.fragmentID, []string{capture, deleteHeader})
+			assertOrder(t, xml, tt.fragmentID, capture, deleteHeader)
+		})
+	}
+}
+
+func TestResponseEvalInboundFragments_CaptureThenDeleteRuntimeEdgeProviderHeader(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-response-evals", "hl-v2-response-evals-inbound"},
+		{"v3-response-evals", "hl-v3-response-evals-inbound"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			capture := `<set-variable name="hl_runtime_edge_provider" value='@(context.Request.Headers.GetValueOrDefault("HL-Runtime-Edge-Provider", "azure-apim"))' />`
+			deleteHeader := `<set-header name="HL-Runtime-Edge-Provider" exists-action="delete" />`
+			assertContainsAll(t, xml, tt.fragmentID, []string{capture, deleteHeader})
+			assertOrder(t, xml, tt.fragmentID, capture, deleteHeader)
+		})
+	}
+}

@@ -150,10 +150,23 @@ Optional override headers consumed by the input fragment and removed before call
 | Header | Description |
 |--------|-------------|
 | `HL-Model` | Override model identifier (otherwise read from request body) |
-| `HL-Provider` | Provider name (defaults to `azure-apim`) |
+| `HL-Provider` | Provider name used by `v1-interactions` (defaults to `azure-apim`) |
+| `HL-Runtime-Edge-Provider` | Edge provider name used by `v2`/`v3` eval packages (defaults to `azure-apim`) |
 | `HL-Requester-Id` | Requester identifier (defaults to subscription key or IP) |
+| `Hl-Runtime-Session-Id` | Optional session/conversation identifier consumed by the policy and not forwarded to the backend |
 
 The `HL-Runtime-Action` response header is set to `BLOCK` or empty for downstream clients.
+
+### v2 Evaluation Headers
+
+The v2 evaluation fragments send additional context headers to the HiddenLayer API:
+
+| Header | Description |
+|--------|-------------|
+| `HL-Runtime-Edge-Provider` | Edge provider name forwarded to HiddenLayer; uses the client value when present, otherwise defaults to `azure-apim` |
+| `HL-Runtime-Edge-Provider-Version` | Edge provider version (`0.1`) |
+| `HL-Runtime-Edge-Provider-Metadata` | JSON object with APIM deployment context (API name, version, service name, region, API ID, revision, subscription name, operation ID) |
+| `Hl-Runtime-Session-Id` | Session identifier for conversation tracking; forwards the client-provided `Hl-Runtime-Session-Id` value when present, otherwise sends an empty value |
 
 ## Examples
 

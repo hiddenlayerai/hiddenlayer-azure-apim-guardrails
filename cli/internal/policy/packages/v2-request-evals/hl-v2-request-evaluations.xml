@@ -3,13 +3,22 @@
     <set-variable name="hl_project_id" value="{{hl-project-id}}" />
     <set-variable name="hl_tenant_id" value="{{hl-tenant-id}}" />
     <set-variable name="hl_roundtrip_id" value="@(Guid.NewGuid().ToString())" />
+    <set-variable name="hl_runtime_edge_provider" value='@{
+        var existing = (string)context.Variables.GetValueOrDefault("hl_runtime_edge_provider", "");
+        return !string.IsNullOrEmpty(existing) ? existing : context.Request.Headers.GetValueOrDefault("HL-Runtime-Edge-Provider", "azure-apim");
+    }' />
+    <set-variable name="hl_runtime_session_id" value='@{
+        var existing = (string)context.Variables.GetValueOrDefault("hl_runtime_session_id", "");
+        return !string.IsNullOrEmpty(existing) ? existing : context.Request.Headers.GetValueOrDefault("Hl-Runtime-Session-Id", "");
+    }' />
     <set-variable name="hl_skip_models" value='@(context.Request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) &amp;&amp; context.Request.Url.Path != null &amp;&amp; context.Request.Url.Path.EndsWith("/v1/models", StringComparison.OrdinalIgnoreCase))' />
     <choose>
         <when condition='@((bool)context.Variables["hl_skip_models"])'>
             <set-variable name="hl_runtime_action" value='@("")' />
             <set-header name="HL-Model" exists-action="delete" />
-            <set-header name="HL-Provider" exists-action="delete" />
+            <set-header name="HL-Runtime-Edge-Provider" exists-action="delete" />
             <set-header name="HL-Requester-Id" exists-action="delete" />
+            <set-header name="Hl-Runtime-Session-Id" exists-action="delete" />
             <set-header name="Accept-Encoding" exists-action="override">
                 <value>identity</value>
             </set-header>
@@ -33,14 +42,35 @@
                 <set-header name="X-Correlation-Id" exists-action="override">
                     <value>@((string)context.Variables.GetValueOrDefault("correlationId", ""))</value>
                 </set-header>
-                <set-header name="hl-runtime-edge-provider" exists-action="override">
-                    <value>azure-apim</value>
+                <set-header name="HL-Runtime-Edge-Provider" exists-action="override">
+                    <value>@((string)context.Variables.GetValueOrDefault("hl_runtime_edge_provider", "azure-apim"))</value>
                 </set-header>
                 <set-header name="X-Tenant-Id" exists-action="override">
                     <value>@((string)context.Variables["hl_tenant_id"])</value>
                 </set-header>
                 <set-header name="hl-roundtrip-id" exists-action="override">
                     <value>@((string)context.Variables["hl_roundtrip_id"])</value>
+                </set-header>
+                <set-header name="HL-Runtime-Edge-Provider-Version" exists-action="override">
+                    <value>0.1</value>
+                </set-header>
+                <set-header name="HL-Runtime-Edge-Provider-Metadata" exists-action="override">
+                    <value>@{
+                        var metadata = new JObject(
+                            new JProperty("apiName", context.Api.Name ?? ""),
+                            new JProperty("apiVersion", context.Api.Version ?? ""),
+                            new JProperty("serviceName", context.Deployment.ServiceName ?? ""),
+                            new JProperty("region", context.Deployment.Region ?? ""),
+                            new JProperty("apiId", context.Api.Id ?? ""),
+                            new JProperty("apiRevision", context.Api.Revision ?? ""),
+                            new JProperty("subscriptionName", context.Subscription != null ? context.Subscription.Name : ""),
+                            new JProperty("operationId", context.Operation?.Id ?? "")
+                        );
+                        return metadata.ToString(Newtonsoft.Json.Formatting.None);
+                    }</value>
+                </set-header>
+                <set-header name="Hl-Runtime-Session-Id" exists-action="override">
+                    <value>@((string)context.Variables.GetValueOrDefault("hl_runtime_session_id", ""))</value>
                 </set-header>
                 <set-body>@((string)context.Variables["hl_original_body"])</set-body>
             </send-request>
@@ -88,8 +118,9 @@
             </choose>
 
             <set-header name="HL-Model" exists-action="delete" />
-            <set-header name="HL-Provider" exists-action="delete" />
+            <set-header name="HL-Runtime-Edge-Provider" exists-action="delete" />
             <set-header name="HL-Requester-Id" exists-action="delete" />
+            <set-header name="Hl-Runtime-Session-Id" exists-action="delete" />
             <set-header name="Accept-Encoding" exists-action="override">
                 <value>identity</value>
             </set-header>

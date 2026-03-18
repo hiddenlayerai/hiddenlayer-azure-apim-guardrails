@@ -314,11 +314,11 @@ func TestV2RequestEvalsFragmentContainsEndpointAndHeaders(t *testing.T) {
 	if !strings.Contains(xml, "/detection/v2/request-evaluations") {
 		t.Error("v2 request evals fragment does not contain expected endpoint /detection/v2/request-evaluations")
 	}
-	if !strings.Contains(xml, "hl-runtime-edge-provider") {
-		t.Error("v2 request evals fragment does not set hl-runtime-edge-provider header")
+	if !strings.Contains(xml, "HL-Runtime-Edge-Provider") {
+		t.Error("v2 request evals fragment does not set HL-Runtime-Edge-Provider header")
 	}
-	if !strings.Contains(xml, ">azure-apim<") {
-		t.Error("v2 request evals fragment does not set hl-runtime-edge-provider to azure-apim")
+	if !strings.Contains(xml, `GetValueOrDefault("hl_runtime_edge_provider", "azure-apim")`) {
+		t.Error("v2 request evals fragment does not default HL-Runtime-Edge-Provider to azure-apim")
 	}
 }
 
@@ -356,11 +356,11 @@ func TestV2ResponseEvalsFragmentContainsEndpointAndHeaders(t *testing.T) {
 	if !strings.Contains(xml, "/detection/v2/response-evaluations") {
 		t.Error("v2 response evals fragment does not contain expected endpoint /detection/v2/response-evaluations")
 	}
-	if !strings.Contains(xml, "hl-runtime-edge-provider") {
-		t.Error("v2 response evals fragment does not set hl-runtime-edge-provider header")
+	if !strings.Contains(xml, "HL-Runtime-Edge-Provider") {
+		t.Error("v2 response evals fragment does not set HL-Runtime-Edge-Provider header")
 	}
-	if !strings.Contains(xml, ">azure-apim<") {
-		t.Error("v2 response evals fragment does not set hl-runtime-edge-provider to azure-apim")
+	if !strings.Contains(xml, `GetValueOrDefault("hl_runtime_edge_provider", "azure-apim")`) {
+		t.Error("v2 response evals fragment does not default HL-Runtime-Edge-Provider to azure-apim")
 	}
 }
 
