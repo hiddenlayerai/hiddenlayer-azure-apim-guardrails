@@ -25,6 +25,29 @@ go install github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli@latest
 
 Download from the [tags page](https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/tags).
 
+### Quick Start (Pre-built Binary)
+
+```bash
+# 1. Download the correct release asset for your platform
+# Example:
+curl -L -o hiddenlayer-apim https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/latest/download/hiddenlayer-apim-darwin-arm64
+
+# 2. Make it executable
+chmod +x ./hiddenlayer-apim
+
+# 3. Verify the binary works
+./hiddenlayer-apim version
+
+# 4. Initialize configuration
+./hiddenlayer-apim init
+
+# 5. Edit .env with your Azure and HiddenLayer credentials
+vim .env
+
+# 6. Deploy policy fragments to APIM
+./hiddenlayer-apim deploy
+```
+
 ## Quick Start
 
 ```bash
@@ -46,6 +69,34 @@ hiddenlayer-apim list
 # 6. Apply HiddenLayer policy to an API
 hiddenlayer-apim apply my-openai-api
 ```
+
+### Quick Start With Release Bicep Templates
+
+Some customers may prefer to deploy the pre-built Bicep bundles published in GitHub releases instead of running the CLI locally.
+
+1. Download and extract the Bicep bundle from the desired GitHub release asset.
+2. Review and update `main.bicepparam` for your APIM environment.
+3. Use Azure CLI to preview and deploy the template:
+
+```bash
+# Authenticate and select the target subscription
+az login
+az account set --subscription "<subscription-id>"
+
+# Preview the deployment
+az deployment group what-if \
+  --resource-group <rg> \
+  --template-file ./hl-bicep/main.bicep \
+  --parameters ./hl-bicep/main.bicepparam
+
+# Deploy the fragments
+az deployment group create \
+  --resource-group <rg> \
+  --template-file ./hl-bicep/main.bicep \
+  --parameters ./hl-bicep/main.bicepparam
+```
+
+After deployment completes, the fragments are available in API Management and can be referenced from API policies.
 
 ## Commands
 
@@ -73,8 +124,10 @@ APIM_NAME=your-apim-instance
 HL_CLIENT=your-client-id
 HL_SECRET=your-client-secret
 HL_PROJECT_ID=your-project-id
+HL_TENANT_ID=your-tenant-id
 
 # Optional
+HL_OAUTH_CACHE_SECONDS=5
 HL_TARGET_API=default-api-id
 ```
 
@@ -83,6 +136,9 @@ HL_TARGET_API=default-api-id
 Fragments are organized into **packages** under `internal/policy/packages/`. Each package contains a `package.json` manifest (including `name`, `version`, `inbound`, `outbound`) and `.xml` fragment files. The CLI auto-discovers available packages at compile time via `//go:embed`.
 
 - Use `--package <name>` on `deploy`, `apply`, `status`, or `remove` to select a specific package.
+- Use `deploy --packages <a,b,c>` to deploy multiple packages in a single command.
+- Use `apply --packages <a,b,c>` to apply multiple packages in a single command.
+- Use `remove --packages <a,b,c>` to remove multiple packages in a single command.
 - Set `HL_PACKAGE` in your `.env` to set a default.
 - If only one package is available, it is auto-selected.
 - If multiple packages exist and no flag/env is set, an interactive menu is shown.
@@ -114,9 +170,13 @@ az deployment group create \
   --parameters ./hl-bicep/main.bicepparam
 ```
 
+The same Azure CLI workflow applies to pre-built Bicep bundles downloaded from GitHub releases: extract the bundle, review `main.bicepparam`, then deploy `main.bicep` with `az deployment group create`.
+
 ## How It Works
 
-This CLI deploys policy fragments that use the HiddenLayer v1 Interactions API:
+This CLI deploys policy fragments that use a HiddenLayer evaluation API, depending on the selected package.
+
+### v1 Interactions (`v1-interactions`)
 
 - **Single endpoint**: `POST /detection/v1/interactions` (called twice: once for input, once for output)
 
@@ -150,10 +210,35 @@ Optional override headers consumed by the input fragment and removed before call
 | Header | Description |
 |--------|-------------|
 | `HL-Model` | Override model identifier (otherwise read from request body) |
-| `HL-Provider` | Provider name (defaults to `azure-apim`) |
+| `HL-Provider` | Provider name used by `v1-interactions` (defaults to `azure-apim`) |
+| `HL-Runtime-Edge-Provider` | Edge provider name used by the bundled `v2` eval packages (defaults to `azure-apim`) |
 | `HL-Requester-Id` | Requester identifier (defaults to subscription key or IP) |
+| `Hl-Runtime-Session-Id` | Optional session/conversation identifier consumed by the policy and not forwarded to the backend |
 
 The `HL-Runtime-Action` response header is set to `BLOCK` or empty for downstream clients.
+
+### v2 Evaluations (pass-through)
+
+Two packages support pass-through request/response evaluation where HiddenLayer returns a provider-shaped payload:
+
+- `v2-request-evals`
+  - Calls `POST /detection/v2/request-evaluations` in **inbound**
+  - Uses the `hl-runtime-action` response header from HiddenLayer to decide whether to block the backend call
+- `v2-response-evals`
+  - Calls `POST /detection/v2/response-evaluations` in **outbound**
+
+In both packages, the APIM policy sends `HL-Runtime-Edge-Provider` to HiddenLayer, using the client value when present and otherwise defaulting to `azure-apim`. The policy surfaces the decision to clients as `HL-Runtime-Action: BLOCK` (or empty).
+
+#### Headers Sent to HiddenLayer (v2)
+
+The v2 evaluation fragments send additional context headers to the HiddenLayer API:
+
+| Header | Description |
+|--------|-------------|
+| `HL-Runtime-Edge-Provider` | Edge provider name forwarded to HiddenLayer; uses the client value when present, otherwise defaults to `azure-apim` |
+| `HL-Runtime-Edge-Provider-Version` | Edge provider version (`0.1`) |
+| `HL-Runtime-Edge-Provider-Metadata` | JSON object with APIM deployment context (API name, version, service name, region, API ID, revision, subscription name, operation ID) |
+| `Hl-Runtime-Session-Id` | Session identifier for conversation tracking; forwards the client-provided `Hl-Runtime-Session-Id` value when present, otherwise sends an empty value |
 
 ## Examples
 

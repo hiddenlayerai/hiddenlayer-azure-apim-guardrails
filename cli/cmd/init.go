@@ -39,8 +39,15 @@ HL_CLIENT=your-client-id
 # HiddenLayer OAuth Client Secret
 HL_SECRET=your-client-secret
 
-# HiddenLayer Project ID (required for v1 Interactions API)
+# HiddenLayer Project ID (used by HiddenLayer evaluation endpoints)
 HL_PROJECT_ID=your-project-id
+
+# HiddenLayer Tenant ID
+HL_TENANT_ID=your-tenant-id
+
+# Optional: OAuth token cache duration (seconds) for APIM internal cache
+# Default: 5
+# HL_OAUTH_CACHE_SECONDS=5
 
 # ===== Optional =====
 # HiddenLayer host suffix for all endpoints (auth.<host>, api.<host>)
@@ -51,6 +58,8 @@ HL_PROJECT_ID=your-project-id
 
 # Fragment package to use (see available packages with 'deploy --help')
 # HL_PACKAGE=v1-interactions
+# HL_PACKAGE=v2-request-evals
+# HL_PACKAGE=v2-response-evals
 `
 
 func runInit(cmd *cobra.Command, args []string) error {

@@ -10,6 +10,7 @@ import (
 )
 
 var deployPackage string
+var deployPackages []string
 
 var deployCmd = &cobra.Command{
 	Use:   "deploy",
@@ -19,12 +20,13 @@ Azure API Management instance.
 
 This creates:
   • Named values for HiddenLayer credentials
-  • Policy fragments for OAuth and v1 Interactions input/output evaluation`,
+  • Policy fragments for OAuth and HiddenLayer evaluation (package-specific)`,
 	RunE: runDeploy,
 }
 
 func init() {
 	deployCmd.Flags().StringVar(&deployPackage, "package", "", "fragment package to deploy (default: auto-select)")
+	deployCmd.Flags().StringSliceVar(&deployPackages, "packages", nil, "fragment packages to deploy (comma-separated or repeated; cannot be used with --package)")
 	rootCmd.AddCommand(deployCmd)
 }
 
@@ -33,19 +35,32 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	pkgFlag := deployPackage
-	if pkgFlag == "" {
-		pkgFlag = cfg.HLPackage
+	if cmd.Flags().Changed("packages") && cmd.Flags().Changed("package") {
+		return fmt.Errorf("--packages cannot be used with --package")
 	}
-	pkg, err := policy.SelectPackageStdin(pkgFlag)
+
+	pkgs, err := resolveDeployPackages(cmd)
 	if err != nil {
-		return fmt.Errorf("package selection: %w", err)
+		return err
 	}
 
 	printHeader("Deploying HiddenLayer to APIM")
-	packageLabel := pkg.Manifest.Name
-	if pkg.Manifest.Version != "" {
-		packageLabel = fmt.Sprintf("%s@%s", pkg.Manifest.Name, pkg.Manifest.Version)
+	packageLabel := ""
+	if len(pkgs) == 1 {
+		packageLabel = pkgs[0].Manifest.Name
+		if pkgs[0].Manifest.Version != "" {
+			packageLabel = fmt.Sprintf("%s@%s", pkgs[0].Manifest.Name, pkgs[0].Manifest.Version)
+		}
+	} else {
+		labels := make([]string, 0, len(pkgs))
+		for _, p := range pkgs {
+			if p.Manifest.Version != "" {
+				labels = append(labels, fmt.Sprintf("%s@%s", p.Manifest.Name, p.Manifest.Version))
+			} else {
+				labels = append(labels, p.Manifest.Name)
+			}
+		}
+		packageLabel = fmt.Sprintf("%v", labels)
 	}
 	fmt.Printf("Resource Group: %s\n", cfg.ResourceGroup)
 	fmt.Printf("APIM Instance:  %s\n", cfg.APIMName)
@@ -61,16 +76,20 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 
 	printInfo("Deploying named values...")
 
-	namedValues := []struct {
+	type namedValueDef struct {
 		name        string
 		displayName string
 		value       string
 		secret      bool
-	}{
+	}
+
+	namedValues := []namedValueDef{
 		{"hl-client-id", "hl-client-id", cfg.HLClientID, false},
 		{"hl-client-secret", "hl-client-secret", cfg.HLClientSecret, true},
 		{"hl-project-id", "hl-project-id", cfg.HLProjectID, false},
 		{"hl-host", "hl-host", cfg.HLHost, false},
+		{"hl-tenant-id", "hl-tenant-id", cfg.HLTenantID, false},
+		{"hl-oauth-cache-seconds", "hl-oauth-cache-seconds", cfg.HLOAuthCacheSeconds, false},
 	}
 
 	for _, nv := range namedValues {
@@ -86,12 +105,38 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 
 	printInfo("Deploying policy fragments...")
 
-	for _, frag := range pkg.Fragments {
-		desc := pkg.FragmentDescription(frag.ID)
-		if err := client.CreateOrUpdatePolicyFragment(frag.ID, frag.XML, desc); err != nil {
-			return fmt.Errorf("failed to create fragment '%s': %w", frag.ID, err)
+	type fragDef struct {
+		id   string
+		xml  string
+		desc string
+	}
+
+	fragments := map[string]fragDef{}
+	for _, pkg := range pkgs {
+		for _, frag := range pkg.Fragments {
+			desc := pkg.FragmentDescription(frag.ID)
+			if existing, ok := fragments[frag.ID]; ok {
+				if existing.xml != frag.XML {
+					return fmt.Errorf("fragment ID %q appears in multiple packages with different XML (%s vs %s)", frag.ID, existing.desc, desc)
+				}
+				continue
+			}
+			fragments[frag.ID] = fragDef{id: frag.ID, xml: frag.XML, desc: desc}
 		}
-		printSuccess("Created fragment: %s (%s)", frag.ID, desc)
+	}
+
+	for _, pkg := range pkgs {
+		for _, fragID := range pkg.AllFragmentIDs() {
+			def, ok := fragments[fragID]
+			if !ok {
+				continue
+			}
+			if err := client.CreateOrUpdatePolicyFragment(def.id, def.xml, def.desc); err != nil {
+				return fmt.Errorf("failed to create fragment '%s': %w", def.id, err)
+			}
+			printSuccess("Created fragment: %s (%s)", def.id, def.desc)
+			delete(fragments, fragID)
+		}
 	}
 
 	printHeader("Deployment Complete")
@@ -103,4 +148,39 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	return nil
+}
+
+func resolveDeployPackages(cmd *cobra.Command) ([]*policy.Package, error) {
+	if cmd.Flags().Changed("packages") {
+		raw, err := cmd.Flags().GetStringSlice("packages")
+		if err != nil {
+			return nil, fmt.Errorf("read --packages: %w", err)
+		}
+		names, err := normalizeUniquePackageNames(raw)
+		if err != nil {
+			return nil, err
+		}
+		if len(names) == 0 {
+			return nil, fmt.Errorf("no packages specified")
+		}
+		pkgs := make([]*policy.Package, 0, len(names))
+		for _, name := range names {
+			p, err := policy.LoadPackage(name)
+			if err != nil {
+				return nil, fmt.Errorf("package load %q: %w", name, err)
+			}
+			pkgs = append(pkgs, p)
+		}
+		return pkgs, nil
+	}
+
+	pkgFlag := deployPackage
+	if pkgFlag == "" {
+		pkgFlag = cfg.HLPackage
+	}
+	pkg, err := policy.SelectPackageStdin(pkgFlag)
+	if err != nil {
+		return nil, fmt.Errorf("package selection: %w", err)
+	}
+	return []*policy.Package{pkg}, nil
 }

@@ -15,10 +15,12 @@ type Config struct {
 	SubscriptionID string
 
 	// HiddenLayer configuration
-	HLClientID     string
-	HLClientSecret string
-	HLProjectID    string
-	HLHost         string
+	HLClientID          string
+	HLClientSecret      string
+	HLProjectID         string
+	HLTenantID          string
+	HLHost              string
+	HLOAuthCacheSeconds string
 
 	TargetAPI string
 	HLPackage string
@@ -62,21 +64,26 @@ func LoadFrom(path string) (*Config, error) {
 
 func buildConfigFromEnv() *Config {
 	return &Config{
-		ResourceGroup:  os.Getenv("RG"),
-		APIMName:       os.Getenv("APIM_NAME"),
-		SubscriptionID: os.Getenv("AZURE_SUBSCRIPTION_ID"),
-		HLClientID:     os.Getenv("HL_CLIENT"),
-		HLClientSecret: os.Getenv("HL_SECRET"),
-		HLProjectID:    os.Getenv("HL_PROJECT_ID"),
-		HLHost:         os.Getenv("HL_HOST"),
-		TargetAPI:      os.Getenv("HL_TARGET_API"),
-		HLPackage:      os.Getenv("HL_PACKAGE"),
+		ResourceGroup:       os.Getenv("RG"),
+		APIMName:            os.Getenv("APIM_NAME"),
+		SubscriptionID:      os.Getenv("AZURE_SUBSCRIPTION_ID"),
+		HLClientID:          os.Getenv("HL_CLIENT"),
+		HLClientSecret:      os.Getenv("HL_SECRET"),
+		HLProjectID:         os.Getenv("HL_PROJECT_ID"),
+		HLTenantID:          os.Getenv("HL_TENANT_ID"),
+		HLHost:              os.Getenv("HL_HOST"),
+		HLOAuthCacheSeconds: os.Getenv("HL_OAUTH_CACHE_SECONDS"),
+		TargetAPI:           os.Getenv("HL_TARGET_API"),
+		HLPackage:           os.Getenv("HL_PACKAGE"),
 	}
 }
 
 func (c *Config) normalizeConfig() {
 	if c.HLHost == "" {
 		c.HLHost = "hiddenlayer.ai"
+	}
+	if c.HLOAuthCacheSeconds == "" {
+		c.HLOAuthCacheSeconds = "5"
 	}
 }
 
@@ -102,6 +109,9 @@ func (c *Config) ValidateHLCredentials() error {
 	}
 	if c.HLProjectID == "" {
 		return fmt.Errorf("hl_project_id (HL_PROJECT_ID) is required")
+	}
+	if c.HLTenantID == "" {
+		return fmt.Errorf("hl_tenant_id (HL_TENANT_ID) is required")
 	}
 	return nil
 }

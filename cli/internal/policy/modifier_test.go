@@ -116,6 +116,24 @@ func mustLoadV1(t *testing.T) *Package {
 	return pkg
 }
 
+func mustLoadV2RequestEvals(t *testing.T) *Package {
+	t.Helper()
+	pkg, err := LoadPackage("v2-request-evals")
+	if err != nil {
+		t.Fatalf("failed to load v2-request-evals: %v", err)
+	}
+	return pkg
+}
+
+func mustLoadV2ResponseEvals(t *testing.T) *Package {
+	t.Helper()
+	pkg, err := LoadPackage("v2-response-evals")
+	if err != nil {
+		t.Fatalf("failed to load v2-response-evals: %v", err)
+	}
+	return pkg
+}
+
 func TestHasHiddenLayerFragments(t *testing.T) {
 	pkg := mustLoadV1(t)
 
@@ -138,6 +156,30 @@ func TestHasHiddenLayerFragments(t *testing.T) {
 				t.Errorf("HasHiddenLayerFragments() = %v, want %v", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestHasHiddenLayerFragments_RequiresFullPackage(t *testing.T) {
+	pkg := mustLoadV2RequestEvals(t)
+
+	policyWithSharedOnly := `<policies>
+    <inbound>
+        <base />
+        <include-fragment fragment-id="hl-oauth-token-management" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>`
+
+	if HasHiddenLayerFragments(policyWithSharedOnly, pkg) {
+		t.Fatal("expected shared oauth fragment alone to be insufficient for package detection")
 	}
 }
 
@@ -261,6 +303,36 @@ func TestInjectHiddenLayerFragments_Idempotent(t *testing.T) {
 	}
 }
 
+func TestInjectHiddenLayerFragments_MultiplePackages_NoDuplicateCorrelationId(t *testing.T) {
+	pkgA := mustLoadV2ResponseEvals(t)
+	pkgB := mustLoadV2RequestEvals(t)
+
+	withA, err := InjectHiddenLayerFragments(basePolicyOnly, pkgA)
+	if err != nil {
+		t.Fatalf("InjectHiddenLayerFragments(pkgA) error = %v", err)
+	}
+	withAB, err := InjectHiddenLayerFragments(withA, pkgB)
+	if err != nil {
+		t.Fatalf("InjectHiddenLayerFragments(pkgB) error = %v", err)
+	}
+
+	if c := strings.Count(withAB, `name="correlationId"`); c != 1 {
+		t.Fatalf("expected correlationId to be injected once, got %d", c)
+	}
+	if c := strings.Count(withAB, `fragment-id="hl-oauth-token-management"`); c != 1 {
+		t.Fatalf("expected hl-oauth-token-management include once, got %d", c)
+	}
+
+	oauthPos := strings.Index(withAB, `fragment-id="hl-oauth-token-management"`)
+	reqPos := strings.Index(withAB, `fragment-id="hl-v2-request-evaluations"`)
+	if oauthPos == -1 || reqPos == -1 {
+		t.Fatalf("expected oauth and request eval fragments to be present (oauth=%d, request=%d)", oauthPos, reqPos)
+	}
+	if oauthPos > reqPos {
+		t.Fatalf("expected oauth fragment to appear before request evals fragment (oauth=%d, request=%d)", oauthPos, reqPos)
+	}
+}
+
 func TestRemoveHiddenLayerFragments_EmptyPolicy(t *testing.T) {
 	pkg := mustLoadV1(t)
 	result, err := RemoveHiddenLayerFragments("", pkg)
@@ -379,6 +451,174 @@ func TestRemoveHiddenLayerFragmentsByIDs(t *testing.T) {
 	}
 	if err := ValidatePolicy(result); err != nil {
 		t.Errorf("Result is not valid policy: %v", err)
+	}
+}
+
+func TestRemoveHiddenLayerFragmentsByIDs_PartialRemovalPreservesCorrelationWhenHLRemains(t *testing.T) {
+	const policyWithMultipleHL = `<policies>
+    <inbound>
+        <base />
+        <!-- Generate correlation ID for request tracking -->
+        <set-variable name="correlationId" value="@(context.RequestId.ToString())" />
+        <include-fragment fragment-id="hl-oauth-token-management" />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <include-fragment fragment-id="hl-v2-response-evaluations" />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>`
+
+	result, err := RemoveHiddenLayerFragmentsByIDs(policyWithMultipleHL, []string{"hl-v2-request-evaluations"})
+	if err != nil {
+		t.Fatalf("RemoveHiddenLayerFragmentsByIDs() error = %v", err)
+	}
+	if !strings.Contains(result, `name="correlationId"`) {
+		t.Fatal("expected correlationId to be preserved when other HL fragments remain")
+	}
+	if !strings.Contains(result, `fragment-id="hl-oauth-token-management"`) {
+		t.Fatal("expected shared oauth fragment include to remain")
+	}
+	if !strings.Contains(result, `fragment-id="hl-v2-response-evaluations"`) {
+		t.Fatal("expected other HL fragment include to remain")
+	}
+}
+
+func TestInjectHiddenLayerFragments_ReordersOAuthBeforeOtherHLFragments(t *testing.T) {
+	const misordered = `<policies>
+    <inbound>
+        <base />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
+        <include-fragment fragment-id="hl-oauth-token-management" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>`
+
+	pkg := mustLoadV2RequestEvals(t)
+	fixed, err := InjectHiddenLayerFragments(misordered, pkg)
+	if err != nil {
+		t.Fatalf("InjectHiddenLayerFragments() error = %v", err)
+	}
+
+	oauthPos := strings.Index(fixed, `fragment-id="hl-oauth-token-management"`)
+	reqPos := strings.Index(fixed, `fragment-id="hl-v2-request-evaluations"`)
+	if oauthPos == -1 || reqPos == -1 {
+		t.Fatalf("expected oauth and request eval fragments to be present (oauth=%d, request=%d)", oauthPos, reqPos)
+	}
+	if oauthPos > reqPos {
+		t.Fatalf("expected oauth fragment to appear before request evals fragment (oauth=%d, request=%d)", oauthPos, reqPos)
+	}
+}
+
+func TestInjectHiddenLayerFragments_RepairsMissingCorrelationId(t *testing.T) {
+	const missingCorrelation = `<policies>
+    <inbound>
+        <base />
+        <include-fragment fragment-id="hl-oauth-token-management" />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>`
+
+	pkg := mustLoadV2RequestEvals(t)
+	fixed, err := InjectHiddenLayerFragments(missingCorrelation, pkg)
+	if err != nil {
+		t.Fatalf("InjectHiddenLayerFragments() error = %v", err)
+	}
+	if !strings.Contains(fixed, `name="correlationId"`) {
+		t.Fatal("expected InjectHiddenLayerFragments to add correlationId when HL fragments exist")
+	}
+}
+
+func TestInjectHiddenLayerFragments_InsertsCorrelationBeforeHLFragments_WhenBaseIsAfterFragments(t *testing.T) {
+	const baseAfterFragments = `<policies>
+    <inbound>
+        <include-fragment fragment-id="hl-oauth-token-management" />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
+        <base />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>`
+
+	pkg := mustLoadV2RequestEvals(t)
+	fixed, err := InjectHiddenLayerFragments(baseAfterFragments, pkg)
+	if err != nil {
+		t.Fatalf("InjectHiddenLayerFragments() error = %v", err)
+	}
+
+	corrPos := strings.Index(fixed, `name="correlationId"`)
+	oauthPos := strings.Index(fixed, `fragment-id="hl-oauth-token-management"`)
+	if corrPos == -1 || oauthPos == -1 {
+		t.Fatalf("expected correlationId and oauth fragment to be present (corr=%d, oauth=%d)", corrPos, oauthPos)
+	}
+	if corrPos > oauthPos {
+		t.Fatalf("expected correlationId to appear before oauth fragment (corr=%d, oauth=%d)", corrPos, oauthPos)
+	}
+}
+
+func TestInjectHiddenLayerFragments_ReordersCorrelationBeforeHLFragments(t *testing.T) {
+	const misorderedCorrelation = `<policies>
+    <inbound>
+        <base />
+        <include-fragment fragment-id="hl-oauth-token-management" />
+        <include-fragment fragment-id="hl-v2-request-evaluations" />
+        <!-- Generate correlation ID for request tracking -->
+        <set-variable name="correlationId" value="@(context.RequestId.ToString())" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>`
+
+	pkg := mustLoadV2RequestEvals(t)
+	fixed, err := InjectHiddenLayerFragments(misorderedCorrelation, pkg)
+	if err != nil {
+		t.Fatalf("InjectHiddenLayerFragments() error = %v", err)
+	}
+
+	corrPos := strings.Index(fixed, `name="correlationId"`)
+	oauthPos := strings.Index(fixed, `fragment-id="hl-oauth-token-management"`)
+	if corrPos == -1 || oauthPos == -1 {
+		t.Fatalf("expected correlationId and oauth fragment to be present (corr=%d, oauth=%d)", corrPos, oauthPos)
+	}
+	if corrPos > oauthPos {
+		t.Fatalf("expected correlationId to appear before oauth fragment (corr=%d, oauth=%d)", corrPos, oauthPos)
 	}
 }
 

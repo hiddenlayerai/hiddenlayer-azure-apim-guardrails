@@ -140,7 +140,15 @@ func renderBicep(packageName string, version string, group string, fragmentIDs [
 }
 
 func renderBicepParams() string {
-	return "using './main.bicep'\n\nparam apimServiceName = 'your-apim-name'\n"
+	return strings.Join([]string{
+		"using './main.bicep'",
+		"",
+		"// Update this file before deployment.",
+		"// apimServiceName must match the existing Azure API Management service name.",
+		"// Example: 'my-apim-prod'",
+		"param apimServiceName = 'your-apim-name'",
+		"",
+	}, "\n")
 }
 
 func toBicepSymbol(name string) string {

@@ -103,6 +103,23 @@ func TestExportPackageBicep_All(t *testing.T) {
 			t.Fatalf("main.bicep missing %q", want)
 		}
 	}
+
+	paramsRaw, err := os.ReadFile(filepath.Join(outDir, "main.bicepparam"))
+	if err != nil {
+		t.Fatalf("failed to read main.bicepparam: %v", err)
+	}
+	params := string(paramsRaw)
+	for _, want := range []string{
+		"using './main.bicep'",
+		"// Update this file before deployment.",
+		"// apimServiceName must match the existing Azure API Management service name.",
+		"// Example: 'my-apim-prod'",
+		"param apimServiceName = 'your-apim-name'",
+	} {
+		if !strings.Contains(params, want) {
+			t.Fatalf("main.bicepparam missing %q", want)
+		}
+	}
 }
 
 func TestExportPackageBicep_GroupFiltering(t *testing.T) {

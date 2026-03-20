@@ -25,6 +25,29 @@ go install github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli@latest
 
 Download from the [tags page](https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/tags).
 
+### Quick Start (Pre-built Binary)
+
+```bash
+# 1. Download the correct release asset for your platform
+# Example:
+curl -L -o hiddenlayer-apim https://github.com/hiddenlayer/hiddenlayer-azure-apim-guardrails/releases/latest/download/hiddenlayer-apim-darwin-arm64
+
+# 2. Make it executable
+chmod +x ./hiddenlayer-apim
+
+# 3. Verify the binary works
+./hiddenlayer-apim version
+
+# 4. Initialize configuration
+./hiddenlayer-apim init
+
+# 5. Edit .env with your Azure and HiddenLayer credentials
+vim .env
+
+# 6. Deploy policy fragments to APIM
+./hiddenlayer-apim deploy
+```
+
 ## Quick Start
 
 ```bash
@@ -46,6 +69,34 @@ hiddenlayer-apim list
 # 6. Apply HiddenLayer policy to an API
 hiddenlayer-apim apply my-openai-api
 ```
+
+### Quick Start With Release Bicep Templates
+
+Some customers may prefer to deploy the pre-built Bicep bundles published in GitHub releases instead of running the CLI locally.
+
+1. Download and extract the Bicep bundle from the desired GitHub release asset.
+2. Review and update `main.bicepparam` for your APIM environment.
+3. Use Azure CLI to preview and deploy the template:
+
+```bash
+# Authenticate and select the target subscription
+az login
+az account set --subscription "<subscription-id>"
+
+# Preview the deployment
+az deployment group what-if \
+  --resource-group <rg> \
+  --template-file ./hl-bicep/main.bicep \
+  --parameters ./hl-bicep/main.bicepparam
+
+# Deploy the fragments
+az deployment group create \
+  --resource-group <rg> \
+  --template-file ./hl-bicep/main.bicep \
+  --parameters ./hl-bicep/main.bicepparam
+```
+
+After deployment completes, the fragments are available in API Management and can be referenced from API policies.
 
 ## Commands
 
@@ -73,6 +124,7 @@ APIM_NAME=your-apim-instance
 HL_CLIENT=your-client-id
 HL_SECRET=your-client-secret
 HL_PROJECT_ID=your-project-id
+HL_TENANT_ID=your-tenant-id
 
 # Optional
 HL_TARGET_API=default-api-id
@@ -114,6 +166,8 @@ az deployment group create \
   --parameters ./hl-bicep/main.bicepparam
 ```
 
+The same Azure CLI workflow applies to pre-built Bicep bundles downloaded from GitHub releases: extract the bundle, review `main.bicepparam`, then deploy `main.bicep` with `az deployment group create`.
+
 ## How It Works
 
 This CLI deploys policy fragments that use the HiddenLayer v1 Interactions API:
@@ -150,10 +204,23 @@ Optional override headers consumed by the input fragment and removed before call
 | Header | Description |
 |--------|-------------|
 | `HL-Model` | Override model identifier (otherwise read from request body) |
-| `HL-Provider` | Provider name (defaults to `azure-apim`) |
+| `HL-Provider` | Provider name used by `v1-interactions` (defaults to `azure-apim`) |
+| `HL-Runtime-Edge-Provider` | Edge provider name used by the bundled `v2` eval packages (defaults to `azure-apim`) |
 | `HL-Requester-Id` | Requester identifier (defaults to subscription key or IP) |
+| `Hl-Runtime-Session-Id` | Optional session/conversation identifier consumed by the policy and not forwarded to the backend |
 
 The `HL-Runtime-Action` response header is set to `BLOCK` or empty for downstream clients.
+
+### v2 Evaluation Headers
+
+The v2 evaluation fragments send additional context headers to the HiddenLayer API:
+
+| Header | Description |
+|--------|-------------|
+| `HL-Runtime-Edge-Provider` | Edge provider name forwarded to HiddenLayer; uses the client value when present, otherwise defaults to `azure-apim` |
+| `HL-Runtime-Edge-Provider-Version` | Edge provider version (`0.1`) |
+| `HL-Runtime-Edge-Provider-Metadata` | JSON object with APIM deployment context (API name, version, service name, region, API ID, revision, subscription name, operation ID) |
+| `Hl-Runtime-Session-Id` | Session identifier for conversation tracking; forwards the client-provided `Hl-Runtime-Session-Id` value when present, otherwise sends an empty value |
 
 ## Examples
 

@@ -1,0 +1,14 @@
+<fragment>
+    <!-- HiddenLayer v2 Response Evaluations – Inbound Setup -->
+    <set-variable name="hl_runtime_action" value='@("")' />
+    <set-variable name="hl_original_body" value="@(context.Request.Body.As&lt;string&gt;(preserveContent: true))" />
+    <set-variable name="hl_runtime_edge_provider" value='@(context.Request.Headers.GetValueOrDefault("HL-Runtime-Edge-Provider", "azure-apim"))' />
+    <set-variable name="hl_runtime_session_id" value='@(context.Request.Headers.GetValueOrDefault("Hl-Runtime-Session-Id", ""))' />
+    <set-header name="HL-Model" exists-action="delete" />
+    <set-header name="HL-Runtime-Edge-Provider" exists-action="delete" />
+    <set-header name="HL-Requester-Id" exists-action="delete" />
+    <set-header name="Hl-Runtime-Session-Id" exists-action="delete" />
+    <set-header name="Accept-Encoding" exists-action="override">
+        <value>identity</value>
+    </set-header>
+</fragment>

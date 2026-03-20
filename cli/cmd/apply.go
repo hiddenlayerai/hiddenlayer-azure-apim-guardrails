@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -11,8 +12,9 @@ import (
 )
 
 var (
-	applyDryRun  bool
-	applyPackage string
+	applyDryRun   bool
+	applyPackage  string
+	applyPackages []string
 )
 
 var applyCmd = &cobra.Command{
@@ -28,6 +30,7 @@ If no API ID is provided, uses HL_TARGET_API from configuration.`,
 func init() {
 	applyCmd.Flags().BoolVar(&applyDryRun, "dry-run", false, "Preview policy without applying")
 	applyCmd.Flags().StringVar(&applyPackage, "package", "", "fragment package to use (default: auto-select)")
+	applyCmd.Flags().StringSliceVar(&applyPackages, "packages", nil, "fragment packages to apply (comma-separated or repeated; cannot be used with --package)")
 	rootCmd.AddCommand(applyCmd)
 }
 
@@ -45,19 +48,32 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no API specified\n\nUsage: hiddenlayer-apim apply <api-id>\n\nOr set HL_TARGET_API")
 	}
 
-	pkgFlag := applyPackage
-	if pkgFlag == "" {
-		pkgFlag = cfg.HLPackage
+	if cmd.Flags().Changed("packages") && cmd.Flags().Changed("package") {
+		return fmt.Errorf("--packages cannot be used with --package")
 	}
-	pkg, err := policy.SelectPackageStdin(pkgFlag)
+
+	pkgs, err := resolveApplyPackages(cmd)
 	if err != nil {
-		return fmt.Errorf("package selection: %w", err)
+		return err
 	}
 
 	printHeader("Applying HiddenLayer Policy")
-	packageLabel := pkg.Manifest.Name
-	if pkg.Manifest.Version != "" {
-		packageLabel = fmt.Sprintf("%s@%s", pkg.Manifest.Name, pkg.Manifest.Version)
+	packageLabel := ""
+	if len(pkgs) == 1 {
+		packageLabel = pkgs[0].Manifest.Name
+		if pkgs[0].Manifest.Version != "" {
+			packageLabel = fmt.Sprintf("%s@%s", pkgs[0].Manifest.Name, pkgs[0].Manifest.Version)
+		}
+	} else {
+		labels := make([]string, 0, len(pkgs))
+		for _, p := range pkgs {
+			if p.Manifest.Version != "" {
+				labels = append(labels, fmt.Sprintf("%s@%s", p.Manifest.Name, p.Manifest.Version))
+			} else {
+				labels = append(labels, p.Manifest.Name)
+			}
+		}
+		packageLabel = fmt.Sprintf("%v", labels)
 	}
 	fmt.Printf("APIM Instance: %s\n", cfg.APIMName)
 	fmt.Printf("Target API:    %s\n", apiID)
@@ -78,13 +94,20 @@ func runApply(cmd *cobra.Command, args []string) error {
 	printSuccess("Found API: %s (%s)", api.DisplayName, api.Name)
 
 	printInfo("Verifying policy fragments...")
-	for _, frag := range pkg.Fragments {
-		exists, err := waitForPolicyFragment(client, frag.ID, 5, 2*time.Second)
-		if err != nil {
-			return fmt.Errorf("error checking fragment '%s': %w", frag.ID, err)
-		}
-		if !exists {
-			return fmt.Errorf("missing fragment '%s'\n\nRun 'hiddenlayer-apim deploy' first", frag.ID)
+	verified := map[string]bool{}
+	for _, pkg := range pkgs {
+		for _, frag := range pkg.Fragments {
+			if verified[frag.ID] {
+				continue
+			}
+			verified[frag.ID] = true
+			exists, err := waitForPolicyFragment(client, frag.ID, 5, 2*time.Second)
+			if err != nil {
+				return fmt.Errorf("error checking fragment '%s': %w", frag.ID, err)
+			}
+			if !exists {
+				return fmt.Errorf("missing fragment '%s'\n\nRun 'hiddenlayer-apim deploy' first", frag.ID)
+			}
 		}
 	}
 	printSuccess("All policy fragments found")
@@ -98,15 +121,18 @@ func runApply(cmd *cobra.Command, args []string) error {
 		existingPolicy = policy.BasePolicy
 	}
 
-	if policy.HasHiddenLayerFragments(existingPolicy, pkg) {
-		printWarning("HiddenLayer fragments already present in policy")
-		printInfo("Use 'remove' first if you want to re-apply")
-		return nil
+	newPolicy := existingPolicy
+	for _, pkg := range pkgs {
+		var err error
+		newPolicy, err = policy.InjectHiddenLayerFragments(newPolicy, pkg)
+		if err != nil {
+			return err
+		}
 	}
 
-	newPolicy, err := policy.InjectHiddenLayerFragments(existingPolicy, pkg)
-	if err != nil {
-		return err
+	if newPolicy == existingPolicy {
+		printWarning("All requested fragments are already present in policy")
+		return nil
 	}
 
 	if applyDryRun {
@@ -152,6 +178,58 @@ func runApply(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	return nil
+}
+
+func resolveApplyPackages(cmd *cobra.Command) ([]*policy.Package, error) {
+	if cmd.Flags().Changed("packages") {
+		raw, err := cmd.Flags().GetStringSlice("packages")
+		if err != nil {
+			return nil, fmt.Errorf("read --packages: %w", err)
+		}
+		names, err := normalizeUniquePackageNames(raw)
+		if err != nil {
+			return nil, err
+		}
+		if len(names) == 0 {
+			return nil, fmt.Errorf("no packages specified")
+		}
+		pkgs := make([]*policy.Package, 0, len(names))
+		for _, name := range names {
+			p, err := policy.LoadPackage(name)
+			if err != nil {
+				return nil, fmt.Errorf("package load %q: %w", name, err)
+			}
+			pkgs = append(pkgs, p)
+		}
+		return pkgs, nil
+	}
+
+	pkgFlag := applyPackage
+	if pkgFlag == "" {
+		pkgFlag = cfg.HLPackage
+	}
+	pkg, err := policy.SelectPackageStdin(pkgFlag)
+	if err != nil {
+		return nil, fmt.Errorf("package selection: %w", err)
+	}
+	return []*policy.Package{pkg}, nil
+}
+
+func normalizeUniquePackageNames(in []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range in {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate package %q in --packages", name)
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out, nil
 }
 
 func waitForPolicyFragment(client *azure.Client, fragmentID string, attempts int, delay time.Duration) (bool, error) {

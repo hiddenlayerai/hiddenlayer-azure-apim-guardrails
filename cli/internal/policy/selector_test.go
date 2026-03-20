@@ -25,7 +25,7 @@ func TestSelectPackage_InvalidFlag(t *testing.T) {
 
 func TestSelectFromMenu_ValidChoice(t *testing.T) {
 	entries := []menuEntry{
-		{Name: "pkg-a", Version: "1.0.0", Desc: "Package A"},
+		{Name: "pkg-a", Version: "1.0.0", Desc: "Package A", Requires: "ENV_VAR (deploys named value: named-value)"},
 		{Name: "pkg-b", Version: "2.0.0", Desc: "Package B"},
 	}
 	input := strings.NewReader("1\n")
@@ -45,6 +45,9 @@ func TestSelectFromMenu_ValidChoice(t *testing.T) {
 	}
 	if !strings.Contains(out, "@1.0.0") {
 		t.Error("expected version metadata in package menu output")
+	}
+	if !strings.Contains(out, "Requires:") {
+		t.Error("expected requirement hint in package menu output")
 	}
 }
 

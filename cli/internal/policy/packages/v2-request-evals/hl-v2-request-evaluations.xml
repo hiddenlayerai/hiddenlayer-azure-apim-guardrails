@@ -1,0 +1,129 @@
+<fragment>
+    <!-- HiddenLayer v2 Request Evaluations -->
+    <set-variable name="hl_project_id" value="{{hl-project-id}}" />
+    <set-variable name="hl_tenant_id" value="{{hl-tenant-id}}" />
+    <set-variable name="hl_roundtrip_id" value="@(Guid.NewGuid().ToString())" />
+    <set-variable name="hl_runtime_edge_provider" value='@{
+        var existing = (string)context.Variables.GetValueOrDefault("hl_runtime_edge_provider", "");
+        return !string.IsNullOrEmpty(existing) ? existing : context.Request.Headers.GetValueOrDefault("HL-Runtime-Edge-Provider", "azure-apim");
+    }' />
+    <set-variable name="hl_runtime_session_id" value='@{
+        var existing = (string)context.Variables.GetValueOrDefault("hl_runtime_session_id", "");
+        return !string.IsNullOrEmpty(existing) ? existing : context.Request.Headers.GetValueOrDefault("Hl-Runtime-Session-Id", "");
+    }' />
+    <set-variable name="hl_skip_models" value='@(context.Request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) &amp;&amp; context.Request.Url.Path != null &amp;&amp; context.Request.Url.Path.EndsWith("/v1/models", StringComparison.OrdinalIgnoreCase))' />
+    <choose>
+        <when condition='@((bool)context.Variables["hl_skip_models"])'>
+            <set-variable name="hl_runtime_action" value='@("")' />
+            <set-header name="HL-Model" exists-action="delete" />
+            <set-header name="HL-Runtime-Edge-Provider" exists-action="delete" />
+            <set-header name="HL-Requester-Id" exists-action="delete" />
+            <set-header name="Hl-Runtime-Session-Id" exists-action="delete" />
+            <set-header name="Accept-Encoding" exists-action="override">
+                <value>identity</value>
+            </set-header>
+        </when>
+        <otherwise>
+            <set-variable name="hl_runtime_action" value='@("")' />
+            <set-variable name="hl_original_body" value="@(context.Request.Body.As&lt;string&gt;(preserveContent: true))" />
+
+            <send-request mode="new" response-variable-name="hl_request_eval_response" timeout="30" ignore-error="true">
+                <set-url>https://api.{{hl-host}}/detection/v2/request-evaluations</set-url>
+                <set-method>POST</set-method>
+                <set-header name="Content-Type" exists-action="override">
+                    <value>application/json</value>
+                </set-header>
+                <set-header name="Authorization" exists-action="override">
+                    <value>@("Bearer " + (string)context.Variables["access_token"])</value>
+                </set-header>
+                <set-header name="HL-Project-Id" exists-action="override">
+                    <value>@((string)context.Variables["hl_project_id"])</value>
+                </set-header>
+                <set-header name="X-Correlation-Id" exists-action="override">
+                    <value>@((string)context.Variables.GetValueOrDefault("correlationId", ""))</value>
+                </set-header>
+                <set-header name="HL-Runtime-Edge-Provider" exists-action="override">
+                    <value>@((string)context.Variables.GetValueOrDefault("hl_runtime_edge_provider", "azure-apim"))</value>
+                </set-header>
+                <set-header name="X-Tenant-Id" exists-action="override">
+                    <value>@((string)context.Variables["hl_tenant_id"])</value>
+                </set-header>
+                <set-header name="hl-roundtrip-id" exists-action="override">
+                    <value>@((string)context.Variables["hl_roundtrip_id"])</value>
+                </set-header>
+                <set-header name="HL-Runtime-Edge-Provider-Version" exists-action="override">
+                    <value>0.1</value>
+                </set-header>
+                <set-header name="HL-Runtime-Edge-Provider-Metadata" exists-action="override">
+                    <value>@{
+                        var metadata = new JObject(
+                            new JProperty("apiName", context.Api.Name ?? ""),
+                            new JProperty("apiVersion", context.Api.Version ?? ""),
+                            new JProperty("serviceName", context.Deployment.ServiceName ?? ""),
+                            new JProperty("region", context.Deployment.Region ?? ""),
+                            new JProperty("apiId", context.Api.Id ?? ""),
+                            new JProperty("apiRevision", context.Api.Revision ?? ""),
+                            new JProperty("subscriptionName", context.Subscription != null ? context.Subscription.Name : ""),
+                            new JProperty("operationId", context.Operation?.Id ?? "")
+                        );
+                        return metadata.ToString(Newtonsoft.Json.Formatting.None);
+                    }</value>
+                </set-header>
+                <set-header name="Hl-Runtime-Session-Id" exists-action="override">
+                    <value>@((string)context.Variables.GetValueOrDefault("hl_runtime_session_id", ""))</value>
+                </set-header>
+                <set-body>@((string)context.Variables["hl_original_body"])</set-body>
+            </send-request>
+
+            <choose>
+                <when condition='@(context.Variables.ContainsKey("hl_request_eval_response") &amp;&amp; context.Variables["hl_request_eval_response"] != null &amp;&amp; ((IResponse)context.Variables["hl_request_eval_response"]).StatusCode >= 200 &amp;&amp; ((IResponse)context.Variables["hl_request_eval_response"]).StatusCode &lt; 300)'>
+                    <set-variable name="hl_runtime_action" value='@{
+                        var resp = (IResponse)context.Variables["hl_request_eval_response"];
+                        var action = "";
+                        if (resp != null) {
+                            var headers = resp.Headers;
+                            if (headers != null) {
+                                foreach (var kvp in headers) {
+                                    if (string.Equals(kvp.Key, "hl-runtime-action", StringComparison.OrdinalIgnoreCase)) {
+                                        var values = kvp.Value;
+                                        if (values != null &amp;&amp; values.Length &gt; 0 &amp;&amp; values[0] != null) {
+                                            action = values[0];
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        return string.Equals(action, "BLOCK", StringComparison.OrdinalIgnoreCase) ? "BLOCK" : "";
+                    }' />
+                    <choose>
+                        <when condition='@(((string)context.Variables.GetValueOrDefault("hl_runtime_action", "")).Equals("BLOCK", StringComparison.OrdinalIgnoreCase))'>
+                            <return-response>
+                                <set-status code="200" reason="OK" />
+                                <set-header name="Content-Type" exists-action="override">
+                                    <value>application/json</value>
+                                </set-header>
+                                <set-header name="HL-Runtime-Action" exists-action="override">
+                                    <value>BLOCK</value>
+                                </set-header>
+                                <set-body>@(((IResponse)context.Variables["hl_request_eval_response"]).Body.As&lt;string&gt;())</set-body>
+                            </return-response>
+                        </when>
+                        <otherwise>
+                            <!-- Allow/Redact: replace request body with echoed/redacted payload -->
+                            <set-body>@(((IResponse)context.Variables["hl_request_eval_response"]).Body.As&lt;string&gt;())</set-body>
+                        </otherwise>
+                    </choose>
+                </when>
+            </choose>
+
+            <set-header name="HL-Model" exists-action="delete" />
+            <set-header name="HL-Runtime-Edge-Provider" exists-action="delete" />
+            <set-header name="HL-Requester-Id" exists-action="delete" />
+            <set-header name="Hl-Runtime-Session-Id" exists-action="delete" />
+            <set-header name="Accept-Encoding" exists-action="override">
+                <value>identity</value>
+            </set-header>
+        </otherwise>
+    </choose>
+</fragment>

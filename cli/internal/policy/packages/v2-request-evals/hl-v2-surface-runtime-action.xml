@@ -1,0 +1,6 @@
+<fragment>
+    <!-- HiddenLayer v2 Surface Runtime Action -->
+    <set-header name="HL-Runtime-Action" exists-action="override">
+        <value>@(((string)context.Variables.GetValueOrDefault("hl_runtime_action", "")).Equals("BLOCK", StringComparison.OrdinalIgnoreCase) ? "BLOCK" : "")</value>
+    </set-header>
+</fragment>
