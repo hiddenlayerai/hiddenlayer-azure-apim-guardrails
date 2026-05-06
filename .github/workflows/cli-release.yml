@@ -86,7 +86,7 @@ jobs:
           retention-days: 7
 
   build_macos:
-    name: Build macOS archives
+    name: Build macOS packages
     runs-on: macos-latest
     needs: test
     defaults:
@@ -120,6 +120,9 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
+          # Persist keychain password for the installer certificate import step
+          echo "SIGNING_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
           if [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
             echo "No APPLE_CERTIFICATE_PASSWORD secret set; importing certificate with empty password."
           fi
@@ -144,6 +147,54 @@ jobs:
             echo "::warning::No Developer ID Application identity found in certificate"
           fi
 
+      - name: Import Apple installer certificate
+        if: env.APPLE_INSTALLER_CERTIFICATE_BASE64 != ''
+        env:
+          APPLE_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_BASE64 }}
+          # Set APPLE_INSTALLER_CERTIFICATE_PASSWORD secret if the .p12 has a password; defaults to empty string if unset.
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/installer-certificate.p12
+          echo "$APPLE_INSTALLER_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+
+          # Reuse the existing keychain created by the previous step, or create one if it doesn't exist
+          if [ ! -f "$KEYCHAIN_PATH" ]; then
+            KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+            security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          else
+            # Read the keychain password from the env set by the previous step
+            KEYCHAIN_PASSWORD="${SIGNING_KEYCHAIN_PASSWORD}"
+          fi
+
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          if [ -z "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" ]; then
+            echo "No APPLE_INSTALLER_CERTIFICATE_PASSWORD secret set; importing certificate with empty password."
+          fi
+
+          security import "$CERT_PATH" \
+            -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild:,productsign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          INSTALLER_IDENTITY=$(security find-identity -v "$KEYCHAIN_PATH" \
+            | grep "Developer ID Installer" | head -1 \
+            | sed 's/.*"\(.*\)".*/\1/')
+
+          if [ -n "$INSTALLER_IDENTITY" ]; then
+            echo "APPLE_INSTALLER_IDENTITY=$INSTALLER_IDENTITY" >> "$GITHUB_ENV"
+            echo "Found installer identity: $INSTALLER_IDENTITY"
+          else
+            echo "::warning::No Developer ID Installer identity found in certificate"
+          fi
+
       - name: Set up Apple notarization credentials
         if: env.APPLE_API_KEY_BASE64 != ''
         env:
@@ -155,9 +206,10 @@ jobs:
             > ~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
           echo "Notarization API key installed for key ID: $APPLE_API_KEY_ID"
 
-      - name: Build macOS archives
+      - name: Build macOS packages
         env:
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_IDENTITY: ${{ env.APPLE_INSTALLER_IDENTITY }}
         run: |
           set -euo pipefail
 
@@ -177,11 +229,29 @@ jobs:
 
           for arch in amd64 arm64; do
             ./scripts/sign-darwin.sh "dist/darwin-${arch}/hiddenlayer-apim"
-            ditto -c -k --sequesterRsrc "dist/darwin-${arch}/hiddenlayer-apim" \
-              "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}.zip"
+
+            pkgbuild \
+              --root "dist/darwin-${arch}" \
+              --identifier "ai.hiddenlayer.apim-cli" \
+              --version "${VERSION#v}" \
+              --install-location /usr/local/bin \
+              "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg"
+
+            if [ -n "${APPLE_INSTALLER_IDENTITY:-}" ]; then
+              productsign \
+                --sign "$APPLE_INSTALLER_IDENTITY" \
+                --timestamp \
+                "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg" \
+                "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}.pkg"
+              rm "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg"
+            else
+              echo "::warning::No installer signing identity; .pkg will be unsigned."
+              mv "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg" \
+                 "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}.pkg"
+            fi
           done
 
-      - name: Notarize macOS binaries
+      - name: Notarize and staple macOS packages
         if: env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_API_KEY_ID != ''
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -190,7 +260,7 @@ jobs:
           KEY_PATH=~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
           SUBMISSION_IDS=()
 
-          for archive in dist/hiddenlayer-apim-*-darwin-*.zip; do
+          for archive in dist/hiddenlayer-apim-*-darwin-*.pkg; do
             [ -f "$archive" ] || continue
             echo "Submitting $archive..."
             OUTPUT=$(xcrun notarytool submit "$archive" \
@@ -228,6 +298,8 @@ jobs:
               case "$STATUS" in
                 Accepted)
                   echo "$ARCHIVE notarized ($ID)"
+                  xcrun stapler staple "$ARCHIVE"
+                  echo "$ARCHIVE stapled successfully"
                   ;;
                 Invalid|Rejected)
                   echo "::warning::$ARCHIVE notarization rejected ($ID)"
@@ -256,7 +328,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cli-macos
-          path: cli/dist/*.zip
+          path: cli/dist/*.pkg
           if-no-files-found: error
           retention-days: 7
 
@@ -395,7 +467,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum *.tar.gz *.zip > checksums.txt
+          sha256sum *.tar.gz *.pkg *.zip > checksums.txt
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -406,7 +478,7 @@ jobs:
           set -euo pipefail
           cd dist
 
-          for artifact in *.tar.gz *.zip checksums.txt; do
+          for artifact in *.tar.gz *.pkg *.zip checksums.txt; do
             cosign sign-blob --yes \
               --output-signature "${artifact}.sig" \
               --output-certificate "${artifact}.pem" \
@@ -421,6 +493,7 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/*.tar.gz
+            dist/*.pkg
             dist/*.zip
             dist/checksums.txt
             dist/*.sig
