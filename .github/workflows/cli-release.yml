@@ -103,16 +103,15 @@ jobs:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
 
-      - name: Import Apple signing certificate
+      - name: Import Apple signing certificates
         if: env.APPLE_CERTIFICATE_BASE64 != ''
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           # Set APPLE_CERTIFICATE_PASSWORD secret if the .p12 has a password; defaults to empty string if unset.
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_BASE64 }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
         run: |
-          CERT_PATH=$RUNNER_TEMP/certificate.p12
-          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
-
           KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
           KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
 
@@ -120,8 +119,9 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Persist keychain password for the installer certificate import step
-          echo "SIGNING_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+          # Import Application certificate
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
 
           if [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
             echo "No APPLE_CERTIFICATE_PASSWORD secret set; importing certificate with empty password."
@@ -131,6 +131,21 @@ jobs:
             -P "$APPLE_CERTIFICATE_PASSWORD" \
             -A -t cert -f pkcs12 \
             -k "$KEYCHAIN_PATH"
+
+          # Import Installer certificate (if provided)
+          if [ -n "$APPLE_INSTALLER_CERTIFICATE_BASE64" ]; then
+            INSTALLER_CERT_PATH=$RUNNER_TEMP/installer-certificate.p12
+            echo "$APPLE_INSTALLER_CERTIFICATE_BASE64" | base64 --decode > "$INSTALLER_CERT_PATH"
+
+            if [ -z "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" ]; then
+              echo "No APPLE_INSTALLER_CERTIFICATE_PASSWORD secret set; importing installer certificate with empty password."
+            fi
+
+            security import "$INSTALLER_CERT_PATH" \
+              -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+              -A -t cert -f pkcs12 \
+              -k "$KEYCHAIN_PATH" || echo "::warning::Installer certificate import returned non-zero (may be due to duplicate intermediate CAs); checking identity..."
+          fi
 
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
@@ -146,43 +161,6 @@ jobs:
           else
             echo "::warning::No Developer ID Application identity found in certificate"
           fi
-
-      - name: Import Apple installer certificate
-        if: env.APPLE_INSTALLER_CERTIFICATE_BASE64 != ''
-        env:
-          APPLE_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_BASE64 }}
-          # Set APPLE_INSTALLER_CERTIFICATE_PASSWORD secret if the .p12 has a password; defaults to empty string if unset.
-          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
-        run: |
-          CERT_PATH=$RUNNER_TEMP/installer-certificate.p12
-          echo "$APPLE_INSTALLER_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
-
-          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
-
-          # Reuse the existing keychain created by the previous step, or create one if it doesn't exist
-          if [ ! -f "$KEYCHAIN_PATH" ]; then
-            KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
-            security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-            security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
-          else
-            # Read the keychain password from the env set by the previous step
-            KEYCHAIN_PASSWORD="${SIGNING_KEYCHAIN_PASSWORD}"
-          fi
-
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          if [ -z "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" ]; then
-            echo "No APPLE_INSTALLER_CERTIFICATE_PASSWORD secret set; importing certificate with empty password."
-          fi
-
-          security import "$CERT_PATH" \
-            -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 \
-            -k "$KEYCHAIN_PATH"
-
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
           INSTALLER_IDENTITY=$(security find-identity -v "$KEYCHAIN_PATH" \
             | grep "Developer ID Installer" | head -1 \
