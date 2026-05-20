@@ -324,6 +324,7 @@ jobs:
     name: Build Windows archive
     runs-on: windows-latest
     needs: test
+    environment: release
     permissions:
       contents: read
       id-token: write
