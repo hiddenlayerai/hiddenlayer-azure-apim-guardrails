@@ -6,15 +6,16 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build and publish release artifacts
+  test:
+    name: Test
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: cli
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,15 +38,442 @@ jobs:
       - name: Run tests
         run: go test ./...
 
-      - name: Build release artifacts
-        run: make release VERSION="${GITHUB_REF_NAME}"
+  build_linux:
+    name: Build Linux archives
+    runs-on: ubuntu-latest
+    needs: test
+    defaults:
+      run:
+        working-directory: cli
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Build Linux archives
+        run: |
+          set -euo pipefail
+
+          rm -rf dist
+          mkdir -p dist/linux-amd64 dist/linux-arm64
+
+          VERSION="${GITHUB_REF_NAME}"
+          GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+          BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          LDFLAGS="-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=${VERSION} \
+            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.GitCommit=${GIT_COMMIT} \
+            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.BuildDate=${BUILD_DATE}"
+
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/linux-amd64/hiddenlayer-apim .
+          tar -C dist/linux-amd64 -czf "dist/hiddenlayer-apim-${VERSION}-linux-amd64.tar.gz" hiddenlayer-apim
+
+          GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/linux-arm64/hiddenlayer-apim .
+          tar -C dist/linux-arm64 -czf "dist/hiddenlayer-apim-${VERSION}-linux-arm64.tar.gz" hiddenlayer-apim
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux
+          path: cli/dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  build_macos:
+    name: Build macOS packages
+    runs-on: macos-latest
+    needs: test
+    defaults:
+      run:
+        working-directory: cli
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Import Apple signing certificates
+        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          # Set APPLE_CERTIFICATE_PASSWORD secret if the .p12 has a password; defaults to empty string if unset.
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_BASE64 }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import Application certificate
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+
+          if [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
+            echo "No APPLE_CERTIFICATE_PASSWORD secret set; importing certificate with empty password."
+          fi
+
+          security import "$CERT_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          # Import Installer certificate (if provided)
+          if [ -n "$APPLE_INSTALLER_CERTIFICATE_BASE64" ]; then
+            INSTALLER_CERT_PATH=$RUNNER_TEMP/installer-certificate.p12
+            echo "$APPLE_INSTALLER_CERTIFICATE_BASE64" | base64 --decode > "$INSTALLER_CERT_PATH"
+
+            if [ -z "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" ]; then
+              echo "No APPLE_INSTALLER_CERTIFICATE_PASSWORD secret set; importing installer certificate with empty password."
+            fi
+
+            security import "$INSTALLER_CERT_PATH" \
+              -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+              -A -t cert -f pkcs12 \
+              -k "$KEYCHAIN_PATH" || echo "::warning::Installer certificate import returned non-zero (may be due to duplicate intermediate CAs); checking identity..."
+          fi
+
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" | head -1 \
+            | sed 's/.*"\(.*\)".*/\1/')
+
+          if [ -n "$IDENTITY" ]; then
+            echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+            echo "Found signing identity: $IDENTITY"
+          else
+            echo "::warning::No Developer ID Application identity found in certificate"
+          fi
+
+          INSTALLER_IDENTITY=$(security find-identity -v "$KEYCHAIN_PATH" \
+            | grep "Developer ID Installer" | head -1 \
+            | sed 's/.*"\(.*\)".*/\1/')
+
+          if [ -n "$INSTALLER_IDENTITY" ]; then
+            echo "APPLE_INSTALLER_IDENTITY=$INSTALLER_IDENTITY" >> "$GITHUB_ENV"
+            echo "Found installer identity: $INSTALLER_IDENTITY"
+          else
+            echo "::warning::No Developer ID Installer identity found in certificate"
+          fi
+
+      - name: Set up Apple notarization credentials
+        if: env.APPLE_API_KEY_BASE64 != ''
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          mkdir -p ~/private_keys
+          echo "$APPLE_API_KEY_BASE64" | base64 --decode \
+            > ~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
+          echo "Notarization API key installed for key ID: $APPLE_API_KEY_ID"
+
+      - name: Build macOS packages
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_IDENTITY: ${{ env.APPLE_INSTALLER_IDENTITY }}
+        run: |
+          set -euo pipefail
+
+          rm -rf dist
+          mkdir -p dist/darwin-amd64 dist/darwin-arm64
+
+          VERSION="${GITHUB_REF_NAME}"
+          GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+          BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          LDFLAGS="-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=${VERSION} \
+            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.GitCommit=${GIT_COMMIT} \
+            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.BuildDate=${BUILD_DATE}"
+
+          GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/darwin-amd64/hiddenlayer-apim .
+          GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/darwin-arm64/hiddenlayer-apim .
+
+          for arch in amd64 arm64; do
+            ./scripts/sign-darwin.sh "dist/darwin-${arch}/hiddenlayer-apim"
+
+            pkgbuild \
+              --root "dist/darwin-${arch}" \
+              --identifier "ai.hiddenlayer.apim-cli" \
+              --version "${VERSION#v}" \
+              --install-location /usr/local/bin \
+              "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg"
+
+            if [ -n "${APPLE_INSTALLER_IDENTITY:-}" ]; then
+              productsign \
+                --sign "$APPLE_INSTALLER_IDENTITY" \
+                --timestamp \
+                "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg" \
+                "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}.pkg"
+              rm "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg"
+            else
+              echo "::warning::No installer signing identity; .pkg will be unsigned."
+              mv "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg" \
+                 "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}.pkg"
+            fi
+          done
+
+      - name: Notarize and staple macOS packages
+        if: env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_API_KEY_ID != ''
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          KEY_PATH=~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
+          SUBMISSION_IDS=()
+
+          for archive in dist/hiddenlayer-apim-*-darwin-*.pkg; do
+            [ -f "$archive" ] || continue
+            echo "Submitting $archive..."
+            OUTPUT=$(xcrun notarytool submit "$archive" \
+              --key "$KEY_PATH" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" 2>&1)
+            echo "$OUTPUT"
+            ID=$(echo "$OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
+            if [ -n "$ID" ]; then
+              SUBMISSION_IDS+=("$ID:$archive")
+              echo "Submitted $archive -> $ID"
+            else
+              echo "::warning::Failed to submit $archive"
+            fi
+          done
+
+          if [ ${#SUBMISSION_IDS[@]} -eq 0 ]; then
+            echo "No submissions to track."
+            exit 0
+          fi
+
+          DEADLINE=$((SECONDS + 900))
+          PENDING=("${SUBMISSION_IDS[@]}")
+
+          while [ ${#PENDING[@]} -gt 0 ] && [ $SECONDS -lt $DEADLINE ]; do
+            sleep 30
+            STILL_PENDING=()
+            for entry in "${PENDING[@]}"; do
+              ID="${entry%%:*}"
+              ARCHIVE="${entry#*:}"
+              STATUS=$(xcrun notarytool info "$ID" \
+                --key "$KEY_PATH" \
+                --key-id "$APPLE_API_KEY_ID" \
+                --issuer "$APPLE_API_ISSUER_ID" 2>&1 | grep "status:" | head -1 | awk '{print $2}')
+              case "$STATUS" in
+                Accepted)
+                  echo "$ARCHIVE notarized ($ID)"
+                  xcrun stapler staple "$ARCHIVE"
+                  echo "$ARCHIVE stapled successfully"
+                  ;;
+                Invalid|Rejected)
+                  echo "::warning::$ARCHIVE notarization rejected ($ID)"
+                  xcrun notarytool log "$ID" \
+                    --key "$KEY_PATH" \
+                    --key-id "$APPLE_API_KEY_ID" \
+                    --issuer "$APPLE_API_ISSUER_ID" 2>&1 || true
+                  ;;
+                *)
+                  STILL_PENDING+=("$entry")
+                  echo "$ARCHIVE still processing ($STATUS)..."
+                  ;;
+              esac
+            done
+            PENDING=("${STILL_PENDING[@]}")
+          done
+
+          if [ ${#PENDING[@]} -gt 0 ]; then
+            echo "::warning::Notarization still pending for ${#PENDING[@]} archive(s) after timeout."
+            for entry in "${PENDING[@]}"; do
+              echo "Pending: ${entry#*:} (${entry%%:*})"
+            done
+          fi
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-macos
+          path: cli/dist/*.pkg
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          rm -rf ~/private_keys
+
+  build_windows:
+    name: Build Windows archive
+    runs-on: windows-latest
+    needs: test
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CODESIGN_ENDPOINT: ${{ vars.AZURE_CODESIGN_ENDPOINT }}
+      AZURE_CODESIGN_ACCOUNT_NAME: ${{ vars.AZURE_CODESIGN_ACCOUNT_NAME }}
+      AZURE_CODESIGN_PROFILE_NAME: ${{ vars.AZURE_CODESIGN_PROFILE_NAME }}
+    defaults:
+      run:
+        working-directory: cli
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Build Windows binary
+        run: |
+          Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path dist\windows-amd64 | Out-Null
+
+          $version = "${{ github.ref_name }}"
+          try {
+            $gitCommit = (git rev-parse --short HEAD).Trim()
+          } catch {
+            $gitCommit = "unknown"
+          }
+          $buildDate = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $ldflags = "-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=$version -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.GitCommit=$gitCommit -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.BuildDate=$buildDate"
+
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -ldflags $ldflags -o dist\windows-amd64\hiddenlayer-apim.exe .
+          Remove-Item Env:GOOS -ErrorAction SilentlyContinue
+          Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
+
+      - name: Azure login
+        if: env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CODESIGN_ENDPOINT != '' && env.AZURE_CODESIGN_ACCOUNT_NAME != '' && env.AZURE_CODESIGN_PROFILE_NAME != ''
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows binary with Azure Artifact Signing
+        if: env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CODESIGN_ENDPOINT != '' && env.AZURE_CODESIGN_ACCOUNT_NAME != '' && env.AZURE_CODESIGN_PROFILE_NAME != ''
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ vars.AZURE_CODESIGN_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODESIGN_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CODESIGN_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}\cli\dist\windows-amd64
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Package Windows archive
+        run: |
+          $version = "${{ github.ref_name }}"
+          $archive = "dist\hiddenlayer-apim-$version-windows-amd64.zip"
+          $packageDir = "dist\windows-package"
+
+          if (Test-Path $archive) {
+            Remove-Item $archive -Force
+          }
+          Remove-Item -Recurse -Force $packageDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          Copy-Item -Force dist\windows-amd64\hiddenlayer-apim.exe "$packageDir\hiddenlayer-apim.exe"
+          Push-Location $packageDir
+          Compress-Archive -Force -Path hiddenlayer-apim.exe -DestinationPath "..\hiddenlayer-apim-$version-windows-amd64.zip"
+          Pop-Location
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-windows
+          path: cli/dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - build_linux
+      - build_macos
+      - build_windows
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz *.pkg *.zip > checksums.txt
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+
+          for artifact in *.tar.gz *.pkg *.zip checksums.txt; do
+            cosign sign-blob --yes \
+              --output-signature "${artifact}.sig" \
+              --output-certificate "${artifact}.pem" \
+              "$artifact"
+          done
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
-            cli/dist/hiddenlayer-apim-*.tar.gz
-            cli/dist/hiddenlayer-apim-*.zip
-            cli/dist/checksums.txt
+            dist/*.tar.gz
+            dist/*.pkg
+            dist/*.zip
+            dist/checksums.txt
+            dist/*.sig
+            dist/*.pem

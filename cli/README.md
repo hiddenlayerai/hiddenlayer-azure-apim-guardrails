@@ -23,29 +23,43 @@ go install github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli@latest
 
 ### Pre-built Binaries
 
-Download from the [tags page](https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/tags).
+Download from the [releases page](https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases).
+
+Release assets are published as versioned archives:
+
+- macOS: `hiddenlayer-apim-vX.Y.Z-darwin-arm64.pkg`, `hiddenlayer-apim-vX.Y.Z-darwin-amd64.pkg`
+- Linux: `hiddenlayer-apim-vX.Y.Z-linux-amd64.tar.gz`, `hiddenlayer-apim-vX.Y.Z-linux-arm64.tar.gz`
+- Windows: `hiddenlayer-apim-vX.Y.Z-windows-amd64.zip`
+
+Each release also includes:
+
+- `checksums.txt`
+- `checksums.txt.sig` and `checksums.txt.pem`
+- per-archive `.sig` and `.pem` files for cosign verification
+
+macOS packages are Developer ID signed, notarized, and stapled. The `.pkg` installers place the binary in `/usr/local/bin`. Windows binaries are Authenticode signed with Azure Artifact Signing when the Azure signing configuration is present. All published archives and the checksum file are also signed with cosign keyless signing.
 
 ### Quick Start (Pre-built Binary)
 
 ```bash
-# 1. Download the correct release asset for your platform
-# Example:
-curl -L -o hiddenlayer-apim https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/latest/download/hiddenlayer-apim-darwin-arm64
+# 1. Download the macOS installer for your platform
+# Example (Apple Silicon):
+curl -L -O https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/download/v1.2.3/hiddenlayer-apim-v1.2.3-darwin-arm64.pkg
 
-# 2. Make it executable
-chmod +x ./hiddenlayer-apim
+# 2. Install it (installs to /usr/local/bin)
+sudo installer -pkg hiddenlayer-apim-v1.2.3-darwin-arm64.pkg -target /
 
 # 3. Verify the binary works
-./hiddenlayer-apim version
+hiddenlayer-apim version
 
 # 4. Initialize configuration
-./hiddenlayer-apim init
+hiddenlayer-apim init
 
 # 5. Edit .env with your Azure and HiddenLayer credentials
 vim .env
 
 # 6. Deploy policy fragments to APIM
-./hiddenlayer-apim deploy
+hiddenlayer-apim deploy
 ```
 
 ## Quick Start
@@ -292,7 +306,10 @@ GitHub Actions workflows are configured at the repository root:
 - `.github/workflows/cli-release.yml` runs when a semver tag is pushed (for example `v1.2.3`) and:
   - validates tag format,
   - runs tests,
-  - builds cross-platform binaries + `checksums.txt`,
+  - builds Linux and Windows release archives and macOS `.pkg` installers,
+  - Developer ID signs, notarizes, and staples macOS packages,
+  - Authenticode-signs the Windows binary with Azure Artifact Signing when Azure signing is configured,
+  - generates `checksums.txt` and cosign-signs each archive plus the checksum file,
   - publishes GitHub Release assets.
 
 ### Recommended Merge and Release Flow
