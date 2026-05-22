@@ -107,17 +107,13 @@ func runRemove(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		idsToRemoveSet2 := map[string]bool{}
-		for k, v := range idsToRemoveSet {
-			idsToRemoveSet2[k] = v
-		}
-
 		var idsToRemove []string
+		seen := map[string]bool{}
 		for _, pkg := range pkgs {
 			for _, id := range pkg.AllFragmentIDs() {
-				if idsToRemoveSet2[id] {
+				if idsToRemoveSet[id] && !seen[id] {
 					idsToRemove = append(idsToRemove, id)
-					delete(idsToRemoveSet2, id)
+					seen[id] = true
 				}
 			}
 		}

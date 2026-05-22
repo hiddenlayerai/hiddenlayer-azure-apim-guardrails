@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"html"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,6 +13,27 @@ import (
 
 var deployPackage string
 var deployPackages []string
+var deployOverwrite bool
+
+type namedValueDef struct {
+	name        string
+	displayName string
+	value       string
+	secret      bool
+}
+
+type fragDef struct {
+	id   string
+	xml  string
+	desc string
+}
+
+type deployClient interface {
+	GetNamedValueInfo(name string) (*azure.NamedValue, error)
+	CreateOrUpdateNamedValue(name, displayName, value string, secret bool) error
+	GetPolicyFragmentContent(name string) (string, bool, error)
+	CreateOrUpdatePolicyFragment(name, xmlContent, description string) error
+}
 
 var deployCmd = &cobra.Command{
 	Use:   "deploy",
@@ -27,6 +50,7 @@ This creates:
 func init() {
 	deployCmd.Flags().StringVar(&deployPackage, "package", "", "fragment package to deploy (default: auto-select)")
 	deployCmd.Flags().StringSliceVar(&deployPackages, "packages", nil, "fragment packages to deploy (comma-separated or repeated; cannot be used with --package)")
+	deployCmd.Flags().BoolVar(&deployOverwrite, "overwrite", false, "Overwrite existing HiddenLayer named values and policy fragments")
 	rootCmd.AddCommand(deployCmd)
 }
 
@@ -76,13 +100,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 
 	printInfo("Deploying named values...")
 
-	type namedValueDef struct {
-		name        string
-		displayName string
-		value       string
-		secret      bool
-	}
-
 	namedValues := []namedValueDef{
 		{"hl-client-id", "hl-client-id", cfg.HLClientID, false},
 		{"hl-client-secret", "hl-client-secret", cfg.HLClientSecret, true},
@@ -93,23 +110,20 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, nv := range namedValues {
-		if err := client.CreateOrUpdateNamedValue(nv.name, nv.displayName, nv.value, nv.secret); err != nil {
-			return fmt.Errorf("failed to create named value '%s': %w", nv.name, err)
+		action, err := deployNamedValue(client, nv, deployOverwrite)
+		if err != nil {
+			return err
 		}
-		if nv.secret {
-			printSuccess("Created named value: %s (secret)", nv.name)
+		if action == "skipped" {
+			printWarning("Skipped named value: %s (secret exists; use --overwrite to update)", nv.name)
+		} else if nv.secret {
+			printSuccess("%s named value: %s (secret)", actionLabel(action), nv.name)
 		} else {
-			printSuccess("Created named value: %s", nv.name)
+			printSuccess("%s named value: %s", actionLabel(action), nv.name)
 		}
 	}
 
 	printInfo("Deploying policy fragments...")
-
-	type fragDef struct {
-		id   string
-		xml  string
-		desc string
-	}
 
 	fragments := map[string]fragDef{}
 	for _, pkg := range pkgs {
@@ -131,10 +145,11 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 			if !ok {
 				continue
 			}
-			if err := client.CreateOrUpdatePolicyFragment(def.id, def.xml, def.desc); err != nil {
-				return fmt.Errorf("failed to create fragment '%s': %w", def.id, err)
+			action, err := deployPolicyFragment(client, def, deployOverwrite)
+			if err != nil {
+				return err
 			}
-			printSuccess("Created fragment: %s (%s)", def.id, def.desc)
+			printSuccess("%s fragment: %s (%s)", actionLabel(action), def.id, def.desc)
 			delete(fragments, fragID)
 		}
 	}
@@ -148,6 +163,106 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	return nil
+}
+
+func actionLabel(action string) string {
+	switch action {
+	case "created":
+		return "Created"
+	case "unchanged":
+		return "Unchanged"
+	case "overwritten":
+		return "Overwrote"
+	default:
+		if action == "" {
+			return "Processed"
+		}
+		return strings.ToUpper(action[:1]) + action[1:]
+	}
+}
+
+func deployNamedValue(client deployClient, nv namedValueDef, overwrite bool) (string, error) {
+	existing, err := client.GetNamedValueInfo(nv.name)
+	if err != nil {
+		return "", fmt.Errorf("failed to read named value '%s': %w", nv.name, err)
+	}
+	if existing == nil {
+		if err := client.CreateOrUpdateNamedValue(nv.name, nv.displayName, nv.value, nv.secret); err != nil {
+			return "", fmt.Errorf("failed to create named value '%s': %w", nv.name, err)
+		}
+		return "created", nil
+	}
+
+	if existing.Secret {
+		if !overwrite {
+			return "skipped", nil
+		}
+		if err := client.CreateOrUpdateNamedValue(nv.name, nv.displayName, nv.value, nv.secret); err != nil {
+			return "", fmt.Errorf("failed to overwrite named value '%s': %w", nv.name, err)
+		}
+		return "overwritten", nil
+	}
+
+	if existing.Value == nv.value && existing.Secret == nv.secret {
+		return "unchanged", nil
+	}
+	if !overwrite {
+		return "", fmt.Errorf("named value '%s' already exists with a different value; rerun with --overwrite to update it", nv.name)
+	}
+	if err := client.CreateOrUpdateNamedValue(nv.name, nv.displayName, nv.value, nv.secret); err != nil {
+		return "", fmt.Errorf("failed to overwrite named value '%s': %w", nv.name, err)
+	}
+	return "overwritten", nil
+}
+
+func deployPolicyFragment(client deployClient, def fragDef, overwrite bool) (string, error) {
+	existingXML, exists, err := client.GetPolicyFragmentContent(def.id)
+	if err != nil {
+		return "", fmt.Errorf("failed to read fragment '%s': %w", def.id, err)
+	}
+	if !exists {
+		if err := client.CreateOrUpdatePolicyFragment(def.id, def.xml, def.desc); err != nil {
+			return "", fmt.Errorf("failed to create fragment '%s': %w", def.id, err)
+		}
+		return "created", nil
+	}
+	if normalizePolicyFragmentXML(existingXML) == normalizePolicyFragmentXML(def.xml) {
+		return "unchanged", nil
+	}
+	if !overwrite {
+		return "", fmt.Errorf("fragment '%s' already exists with different XML; rerun with --overwrite to replace it", def.id)
+	}
+	if err := client.CreateOrUpdatePolicyFragment(def.id, def.xml, def.desc); err != nil {
+		return "", fmt.Errorf("failed to overwrite fragment '%s': %w", def.id, err)
+	}
+	return "overwritten", nil
+}
+
+func normalizePolicyFragmentXML(xml string) string {
+	if strings.Contains(xml, "&lt;") || strings.Contains(xml, "&gt;") {
+		xml = html.UnescapeString(xml)
+	}
+	xml = strings.ReplaceAll(xml, "\r\n", "\n")
+	xml = strings.ReplaceAll(xml, "\r", "\n")
+
+	lines := strings.Split(xml, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	end := len(lines)
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	if start >= end {
+		return ""
+	}
+
+	return strings.Join(lines[start:end], "\n")
 }
 
 func resolveDeployPackages(cmd *cobra.Command) ([]*policy.Package, error) {

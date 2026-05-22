@@ -316,8 +316,8 @@ func TestEvalFragments_ContainRuntimeEdgeProviderHeader(t *testing.T) {
 			if strings.Contains(xml, "hl-runtime-edge-provider") {
 				t.Errorf("fragment %q should not use lowercase hl-runtime-edge-provider header name", tt.fragmentID)
 			}
-			if strings.Contains(xml, "HL-Provider") {
-				t.Errorf("fragment %q should not reference HL-Provider", tt.fragmentID)
+			if strings.Contains(xml, `HL-Provider"`) {
+				t.Errorf("fragment %q should not reference legacy HL-Provider", tt.fragmentID)
 			}
 		})
 	}
@@ -361,12 +361,58 @@ func TestEvalFragments_ContainSessionIdHeader(t *testing.T) {
 		t.Run(tt.pkg, func(t *testing.T) {
 			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
 			assertContainsAll(t, xml, tt.fragmentID, []string{
-				`<set-header name="Hl-Runtime-Session-Id" exists-action="override">`,
+				`<set-header name="HL-Runtime-Session-Id" exists-action="override">`,
 				`<value>@((string)context.Variables.GetValueOrDefault("hl_runtime_session_id", ""))</value>`,
 			})
+			if strings.Contains(xml, "Hl-Runtime-Session-Id") {
+				t.Errorf("fragment %q should use canonical HL-Runtime-Session-Id casing", tt.fragmentID)
+			}
 			if strings.Contains(xml, "context.RequestId") {
 				t.Errorf("fragment %q should not fall back to context.RequestId", tt.fragmentID)
 			}
+		})
+	}
+}
+
+func TestEvalFragments_ContainRoundtripHeader(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-request-evals", "hl-v2-request-evaluations"},
+		{"v2-response-evals", "hl-v2-response-evaluations"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			assertContainsAll(t, xml, tt.fragmentID, []string{
+				`<set-header name="HL-Roundtrip-Id" exists-action="override">`,
+				`hl_roundtrip_id`,
+			})
+			if strings.Contains(xml, "hl-roundtrip-id") {
+				t.Errorf("fragment %q should use canonical HL-Roundtrip-Id casing", tt.fragmentID)
+			}
+		})
+	}
+}
+
+func TestEvalFragments_ForwardRequesterAndProviderHeaders(t *testing.T) {
+	tests := []struct {
+		pkg        string
+		fragmentID string
+	}{
+		{"v2-request-evals", "hl-v2-request-evaluations"},
+		{"v2-response-evals", "hl-v2-response-evaluations"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
+			assertContainsAll(t, xml, tt.fragmentID, []string{
+				`<set-header name="HL-Requester-Id" exists-action="override">`,
+				`<value>@((string)context.Variables.GetValueOrDefault("hl_requester_id", ""))</value>`,
+				`<set-header name="HL-Provider-Id" exists-action="override">`,
+				`<value>@((string)context.Variables.GetValueOrDefault("hl_provider_id", ""))</value>`,
+			})
 		})
 	}
 }
@@ -382,8 +428,8 @@ func TestRequestEvalFragments_CaptureThenDeleteSessionIdHeader(t *testing.T) {
 		t.Run(tt.pkg, func(t *testing.T) {
 			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
 			capture := `context.Variables.GetValueOrDefault("hl_runtime_session_id", "")`
-			headerFallback := `context.Request.Headers.GetValueOrDefault("Hl-Runtime-Session-Id", "")`
-			deleteHeader := `<set-header name="Hl-Runtime-Session-Id" exists-action="delete" />`
+			headerFallback := `context.Request.Headers.GetValueOrDefault("HL-Runtime-Session-Id", "")`
+			deleteHeader := `<set-header name="HL-Runtime-Session-Id" exists-action="delete" />`
 			assertContainsAll(t, xml, tt.fragmentID, []string{capture, headerFallback, deleteHeader})
 			assertOrder(t, xml, tt.fragmentID, capture, headerFallback)
 		})
@@ -419,12 +465,49 @@ func TestResponseEvalInboundFragments_CaptureThenDeleteSessionIdHeader(t *testin
 	for _, tt := range tests {
 		t.Run(tt.pkg, func(t *testing.T) {
 			xml := mustGetFragmentXML(t, tt.pkg, tt.fragmentID)
-			capture := `<set-variable name="hl_runtime_session_id" value='@(context.Request.Headers.GetValueOrDefault("Hl-Runtime-Session-Id", ""))' />`
-			deleteHeader := `<set-header name="Hl-Runtime-Session-Id" exists-action="delete" />`
+			capture := `<set-variable name="hl_runtime_session_id" value='@(context.Request.Headers.GetValueOrDefault("HL-Runtime-Session-Id", ""))' />`
+			deleteHeader := `<set-header name="HL-Runtime-Session-Id" exists-action="delete" />`
 			assertContainsAll(t, xml, tt.fragmentID, []string{capture, deleteHeader})
 			assertOrder(t, xml, tt.fragmentID, capture, deleteHeader)
 		})
 	}
+}
+
+func TestRequestEvalFragments_CaptureThenDeleteRequesterAndProviderHeaders(t *testing.T) {
+	xml := mustGetFragmentXML(t, "v2-request-evals", "hl-v2-request-evaluations")
+
+	expected := []string{
+		`context.Variables.GetValueOrDefault("hl_requester_id", "")`,
+		`context.Request.Headers.GetValueOrDefault("HL-Requester-Id", "")`,
+		`<set-header name="HL-Requester-Id" exists-action="delete" />`,
+		`context.Variables.GetValueOrDefault("hl_provider_id", "")`,
+		`context.Request.Headers.GetValueOrDefault("HL-Provider-Id", "")`,
+		`<set-header name="HL-Provider-Id" exists-action="delete" />`,
+	}
+	assertContainsAll(t, xml, "hl-v2-request-evaluations", expected)
+}
+
+func TestResponseEvalInboundFragments_CaptureThenDeleteRequesterAndProviderHeaders(t *testing.T) {
+	xml := mustGetFragmentXML(t, "v2-response-evals", "hl-v2-response-evals-inbound")
+
+	expected := []string{
+		`<set-variable name="hl_requester_id" value='@(context.Request.Headers.GetValueOrDefault("HL-Requester-Id", ""))' />`,
+		`<set-header name="HL-Requester-Id" exists-action="delete" />`,
+		`<set-variable name="hl_provider_id" value='@(context.Request.Headers.GetValueOrDefault("HL-Provider-Id", ""))' />`,
+		`<set-header name="HL-Provider-Id" exists-action="delete" />`,
+	}
+	assertContainsAll(t, xml, "hl-v2-response-evals-inbound", expected)
+}
+
+func TestResponseEvalInboundFragments_InitializeRoundtripID(t *testing.T) {
+	xml := mustGetFragmentXML(t, "v2-response-evals", "hl-v2-response-evals-inbound")
+
+	expected := []string{
+		`name="hl_roundtrip_id"`,
+		`context.Variables.GetValueOrDefault("hl_roundtrip_id", "")`,
+		`context.Request.Headers.GetValueOrDefault("HL-Roundtrip-Id", Guid.NewGuid().ToString())`,
+	}
+	assertContainsAll(t, xml, "hl-v2-response-evals-inbound", expected)
 }
 
 func TestResponseEvalInboundFragments_CaptureThenDeleteRuntimeEdgeProviderHeader(t *testing.T) {

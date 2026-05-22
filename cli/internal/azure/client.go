@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -74,7 +75,15 @@ func (c *Client) request(method, path string, body any) ([]byte, int, error) {
 }
 
 func (c *Client) requestWithHeaders(method, path string, body any) ([]byte, int, http.Header, error) {
-	url := fmt.Sprintf("%s%s?api-version=%s", baseURL, path, apiVersion)
+	return c.requestWithHeadersAndQuery(method, path, nil, body)
+}
+
+func (c *Client) requestWithHeadersAndQuery(method, path string, query url.Values, body any) ([]byte, int, http.Header, error) {
+	if query == nil {
+		query = url.Values{}
+	}
+	query.Set("api-version", apiVersion)
+	requestURL := fmt.Sprintf("%s%s?%s", baseURL, path, query.Encode())
 
 	var bodyReader io.Reader
 	if body != nil {
@@ -85,7 +94,7 @@ func (c *Client) requestWithHeaders(method, path string, body any) ([]byte, int,
 		bodyReader = bytes.NewReader(jsonBody)
 	}
 
-	req, err := http.NewRequest(method, url, bodyReader)
+	req, err := http.NewRequest(method, requestURL, bodyReader)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -105,7 +114,7 @@ func (c *Client) requestWithHeaders(method, path string, body any) ([]byte, int,
 	}
 
 	if c.verbose {
-		c.logResponse(method, url, resp.StatusCode, resp.Header, respBody)
+		c.logResponse(method, requestURL, resp.StatusCode, resp.Header, respBody)
 	}
 
 	return respBody, resp.StatusCode, resp.Header, nil
@@ -225,33 +234,47 @@ type NamedValue struct {
 }
 
 func (c *Client) GetNamedValue(name string) (string, error) {
+	nv, err := c.GetNamedValueInfo(name)
+	if err != nil || nv == nil {
+		return "", err
+	}
+	return nv.Value, nil
+}
+
+func (c *Client) GetNamedValueInfo(name string) (*NamedValue, error) {
 	body, status, err := c.request("GET", c.apimPath("/namedValues/"+name), nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if status == 404 {
-		return "", nil
+		return nil, nil
 	}
 	if status != 200 {
-		return "", fmt.Errorf("failed to get named value (status %d): %s", status, string(body))
+		return nil, fmt.Errorf("failed to get named value (status %d): %s", status, string(body))
 	}
 
 	var result struct {
 		Properties struct {
-			Value  string `json:"value"`
-			Secret bool   `json:"secret"`
+			DisplayName string `json:"displayName"`
+			Value       string `json:"value"`
+			Secret      bool   `json:"secret"`
 		} `json:"properties"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	value := result.Properties.Value
 	if result.Properties.Secret {
-		return "[secret]", nil
+		value = "[secret]"
 	}
-	return result.Properties.Value, nil
+	return &NamedValue{
+		Name:   name,
+		Value:  value,
+		Secret: result.Properties.Secret,
+	}, nil
 }
 
 func (c *Client) CreateOrUpdateNamedValue(name, displayName, value string, secret bool) error {
@@ -287,18 +310,34 @@ type PolicyFragment struct {
 }
 
 func (c *Client) GetPolicyFragment(name string) (bool, error) {
-	body, status, err := c.request("GET", c.apimPath("/policyFragments/"+name), nil)
+	_, exists, err := c.GetPolicyFragmentContent(name)
+	return exists, err
+}
+
+func (c *Client) GetPolicyFragmentContent(name string) (string, bool, error) {
+	query := url.Values{}
+	query.Set("format", "rawxml")
+	body, status, _, err := c.requestWithHeadersAndQuery("GET", c.apimPath("/policyFragments/"+name), query, nil)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 
 	if status == 404 {
-		return false, nil
+		return "", false, nil
 	}
 	if status != 200 {
-		return false, fmt.Errorf("failed to get policy fragment '%s' (status %d): %s", name, status, string(body))
+		return "", false, fmt.Errorf("failed to get policy fragment '%s' (status %d): %s", name, status, string(body))
 	}
-	return true, nil
+
+	var result struct {
+		Properties struct {
+			Value string `json:"value"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", false, fmt.Errorf("failed to parse policy fragment '%s': %w", name, err)
+	}
+	return result.Properties.Value, true, nil
 }
 
 func (c *Client) CreateOrUpdatePolicyFragment(name, xmlContent, description string) error {

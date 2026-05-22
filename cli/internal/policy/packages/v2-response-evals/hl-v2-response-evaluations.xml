@@ -49,7 +49,7 @@
                 <set-header name="X-Tenant-Id" exists-action="override">
                     <value>@((string)context.Variables["hl_tenant_id"])</value>
                 </set-header>
-                <set-header name="hl-roundtrip-id" exists-action="override">
+                <set-header name="HL-Roundtrip-Id" exists-action="override">
                     <value>@((string)context.Variables.GetValueOrDefault("hl_roundtrip_id", ""))</value>
                 </set-header>
                 <set-header name="HL-Runtime-Edge-Provider-Version" exists-action="override">
@@ -70,8 +70,14 @@
                         return metadata.ToString(Newtonsoft.Json.Formatting.None);
                     }</value>
                 </set-header>
-                <set-header name="Hl-Runtime-Session-Id" exists-action="override">
+                <set-header name="HL-Runtime-Session-Id" exists-action="override">
                     <value>@((string)context.Variables.GetValueOrDefault("hl_runtime_session_id", ""))</value>
+                </set-header>
+                <set-header name="HL-Requester-Id" exists-action="override">
+                    <value>@((string)context.Variables.GetValueOrDefault("hl_requester_id", ""))</value>
+                </set-header>
+                <set-header name="HL-Provider-Id" exists-action="override">
+                    <value>@((string)context.Variables.GetValueOrDefault("hl_provider_id", ""))</value>
                 </set-header>
                 <set-body>@((string)context.Variables["hl_original_response"])</set-body>
             </send-request>
