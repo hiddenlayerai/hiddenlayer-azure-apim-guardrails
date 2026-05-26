@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"html"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -26,6 +28,18 @@ type fragDef struct {
 	id   string
 	xml  string
 	desc string
+}
+
+type overwritePreview struct {
+	namedValues []namedValueOverwrite
+	fragments   []string
+}
+
+type namedValueOverwrite struct {
+	name          string
+	existingValue string
+	newValue      string
+	secret        bool
 }
 
 type deployClient interface {
@@ -98,8 +112,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	}
 	printSuccess("Connected to Azure")
 
-	printInfo("Deploying named values...")
-
 	namedValues := []namedValueDef{
 		{"hl-client-id", "hl-client-id", cfg.HLClientID, false},
 		{"hl-client-secret", "hl-client-secret", cfg.HLClientSecret, true},
@@ -108,22 +120,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		{"hl-tenant-id", "hl-tenant-id", cfg.HLTenantID, false},
 		{"hl-oauth-cache-seconds", "hl-oauth-cache-seconds", cfg.HLOAuthCacheSeconds, false},
 	}
-
-	for _, nv := range namedValues {
-		action, err := deployNamedValue(client, nv, deployOverwrite)
-		if err != nil {
-			return err
-		}
-		if action == "skipped" {
-			printWarning("Skipped named value: %s (secret exists; use --overwrite to update)", nv.name)
-		} else if nv.secret {
-			printSuccess("%s named value: %s (secret)", actionLabel(action), nv.name)
-		} else {
-			printSuccess("%s named value: %s", actionLabel(action), nv.name)
-		}
-	}
-
-	printInfo("Deploying policy fragments...")
 
 	fragments := map[string]fragDef{}
 	for _, pkg := range pkgs {
@@ -139,6 +135,35 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	fragmentDefs := orderedFragmentDefs(pkgs, fragments)
+	if deployOverwrite {
+		preview, err := collectOverwritePreview(client, namedValues, fragmentDefs)
+		if err != nil {
+			return err
+		}
+		if preview.hasChanges() {
+			if err := confirmOverwrite(cmd.InOrStdin(), cmd.OutOrStdout(), preview); err != nil {
+				return err
+			}
+		}
+	}
+
+	printInfo("Deploying named values...")
+	for _, nv := range namedValues {
+		action, err := deployNamedValue(client, nv, deployOverwrite)
+		if err != nil {
+			return err
+		}
+		if action == "skipped" {
+			printWarning("Skipped named value: %s (secret exists; use --overwrite to update)", nv.name)
+		} else if nv.secret {
+			printSuccess("%s named value: %s (secret)", actionLabel(action), nv.name)
+		} else {
+			printSuccess("%s named value: %s", actionLabel(action), nv.name)
+		}
+	}
+
+	printInfo("Deploying policy fragments...")
 	for _, pkg := range pkgs {
 		for _, fragID := range pkg.AllFragmentIDs() {
 			def, ok := fragments[fragID]
@@ -162,6 +187,91 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  %s apply <api-id>    # Apply policy to an API\n", cyan("hiddenlayer-apim"))
 	fmt.Println()
 
+	return nil
+}
+
+func orderedFragmentDefs(pkgs []*policy.Package, fragments map[string]fragDef) []fragDef {
+	defs := []fragDef{}
+	for _, pkg := range pkgs {
+		for _, fragID := range pkg.AllFragmentIDs() {
+			def, ok := fragments[fragID]
+			if !ok {
+				continue
+			}
+			defs = append(defs, def)
+		}
+	}
+	return defs
+}
+
+func (p overwritePreview) hasChanges() bool {
+	return len(p.namedValues) > 0 || len(p.fragments) > 0
+}
+
+func collectOverwritePreview(client deployClient, namedValues []namedValueDef, fragments []fragDef) (overwritePreview, error) {
+	var preview overwritePreview
+	for _, nv := range namedValues {
+		existing, err := client.GetNamedValueInfo(nv.name)
+		if err != nil {
+			return preview, fmt.Errorf("failed to read named value '%s': %w", nv.name, err)
+		}
+		if existing == nil {
+			continue
+		}
+		if existing.Secret {
+			preview.namedValues = append(preview.namedValues, namedValueOverwrite{name: nv.name, secret: true})
+			continue
+		}
+		if existing.Value != nv.value || existing.Secret != nv.secret {
+			preview.namedValues = append(preview.namedValues, namedValueOverwrite{
+				name:          nv.name,
+				existingValue: existing.Value,
+				newValue:      nv.value,
+			})
+		}
+	}
+
+	for _, def := range fragments {
+		existingXML, exists, err := client.GetPolicyFragmentContent(def.id)
+		if err != nil {
+			return preview, fmt.Errorf("failed to read fragment '%s': %w", def.id, err)
+		}
+		if exists && normalizePolicyFragmentXML(existingXML) != normalizePolicyFragmentXML(def.xml) {
+			preview.fragments = append(preview.fragments, def.id)
+		}
+	}
+
+	return preview, nil
+}
+
+func confirmOverwrite(r io.Reader, w io.Writer, preview overwritePreview) error {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "The following existing APIM resources will be overwritten:")
+	if len(preview.namedValues) > 0 {
+		fmt.Fprintln(w, "  Named values:")
+		for _, nv := range preview.namedValues {
+			if nv.secret {
+				fmt.Fprintf(w, "    - %s (secret)\n", nv.name)
+			} else {
+				fmt.Fprintf(w, "    - %s: %q -> %q\n", nv.name, nv.existingValue, nv.newValue)
+			}
+		}
+	}
+	if len(preview.fragments) > 0 {
+		fmt.Fprintln(w, "  Policy fragments:")
+		for _, id := range preview.fragments {
+			fmt.Fprintf(w, "    - %s\n", id)
+		}
+	}
+	fmt.Fprint(w, "Type 'yes' to continue: ")
+
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		return fmt.Errorf("overwrite cancelled")
+	}
+	if strings.TrimSpace(scanner.Text()) != "yes" {
+		return fmt.Errorf("overwrite cancelled")
+	}
 	return nil
 }
 
@@ -239,15 +349,13 @@ func deployPolicyFragment(client deployClient, def fragDef, overwrite bool) (str
 }
 
 func normalizePolicyFragmentXML(xml string) string {
-	if strings.Contains(xml, "&lt;") || strings.Contains(xml, "&gt;") {
-		xml = html.UnescapeString(xml)
-	}
+	xml = html.UnescapeString(xml)
 	xml = strings.ReplaceAll(xml, "\r\n", "\n")
 	xml = strings.ReplaceAll(xml, "\r", "\n")
 
 	lines := strings.Split(xml, "\n")
 	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " \t")
+		lines[i] = normalizePolicyFragmentLine(strings.TrimRight(line, " \t"))
 	}
 
 	start := 0
@@ -262,7 +370,18 @@ func normalizePolicyFragmentXML(xml string) string {
 		return ""
 	}
 
-	return strings.Join(lines[start:end], "\n")
+	return strings.Join(strings.Fields(strings.Join(lines[start:end], "\n")), " ")
+}
+
+func normalizePolicyFragmentLine(line string) string {
+	line = strings.ReplaceAll(line, "\t", "    ")
+	line = strings.ReplaceAll(line, `='`, `="`)
+	line = strings.ReplaceAll(line, `' `, `" `)
+	line = strings.ReplaceAll(line, `' />`, `" />`)
+	if strings.HasSuffix(line, `'>`) {
+		line = strings.TrimSuffix(line, `'>`) + `">`
+	}
+	return line
 }
 
 func resolveDeployPackages(cmd *cobra.Command) ([]*policy.Package, error) {

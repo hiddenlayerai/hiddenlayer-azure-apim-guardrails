@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -258,5 +259,144 @@ func TestDeployPolicyFragmentTreatsEscapedXMLAsUnchanged(t *testing.T) {
 	}
 	if len(client.updatedFrag) != 0 {
 		t.Fatalf("updatedFrag = %v, want no updates", client.updatedFrag)
+	}
+}
+
+func TestDeployPolicyFragmentTreatsPolicyEntityEscapingAsUnchanged(t *testing.T) {
+	client := &fakeDeployClient{
+		fragments: map[string]string{
+			"hl-fragment": `<fragment>
+    <when condition='@(a &amp;&amp; b)'>
+        <return-response />
+    </when>
+</fragment>`,
+		},
+	}
+	def := fragDef{id: "hl-fragment", xml: `<fragment>
+    <when condition='@(a && b)'>
+        <return-response />
+    </when>
+</fragment>`, desc: "test fragment"}
+
+	action, err := deployPolicyFragment(client, def, false)
+	if err != nil {
+		t.Fatalf("deployPolicyFragment error: %v", err)
+	}
+	if action != "unchanged" {
+		t.Fatalf("action = %q, want unchanged", action)
+	}
+	if len(client.updatedFrag) != 0 {
+		t.Fatalf("updatedFrag = %v, want no updates", client.updatedFrag)
+	}
+}
+
+func TestDeployPolicyFragmentTreatsAPIMRawXMLFormattingAsUnchanged(t *testing.T) {
+	client := &fakeDeployClient{
+		fragments: map[string]string{
+			"hl-fragment": "<fragment>\n\t<!-- test -->\n\t<set-variable name=\"hl_skip_models\" value=\"@(context.Request.Method.Equals(\"GET\", StringComparison.OrdinalIgnoreCase) && context.Request.Url.Path != null)\" />\n\t<when condition=\"@((bool)context.Variables[\"hl_skip_models\"])\">\n\t\t<set-variable name=\"hl_runtime_action\" value=\"@(\"skipped\")\" />\n\t\t<cache-store-value key=\"aad-ccg-token\" value=\"@((string)context.Variables[\"access_token\"])\" duration=\"{{hl-oauth-cache-seconds}}\" />\n\t\t<set-variable name=\"hl_is_streaming\" value=\"@{ var originalBody = (string)context.Variables.GetValueOrDefault(\"hl_original_body\", \"\"); if (string.IsNullOrEmpty(originalBody)) { return false; } return true; }\" />\n\t</when>\n</fragment>",
+		},
+	}
+	def := fragDef{id: "hl-fragment", xml: `<fragment>
+    <!-- test -->
+    <set-variable name="hl_skip_models" value='@(context.Request.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) &amp;&amp; context.Request.Url.Path != null)' />
+    <when condition='@((bool)context.Variables["hl_skip_models"])'>
+        <set-variable name="hl_runtime_action" value='@("skipped")' />
+        <cache-store-value key="aad-ccg-token" value='@((string)context.Variables["access_token"])' duration="{{hl-oauth-cache-seconds}}" />
+        <set-variable name="hl_is_streaming" value='@{
+            var originalBody = (string)context.Variables.GetValueOrDefault("hl_original_body", "");
+            if (string.IsNullOrEmpty(originalBody)) {
+                return false;
+            }
+            return true;
+        }' />
+    </when>
+</fragment>`, desc: "test fragment"}
+
+	action, err := deployPolicyFragment(client, def, false)
+	if err != nil {
+		t.Fatalf("deployPolicyFragment error: %v", err)
+	}
+	if action != "unchanged" {
+		t.Fatalf("action = %q, want unchanged", action)
+	}
+	if len(client.updatedFrag) != 0 {
+		t.Fatalf("updatedFrag = %v, want no updates", client.updatedFrag)
+	}
+}
+
+func TestCollectOverwritePreviewListsChangedNamedValuesAndFragments(t *testing.T) {
+	client := &fakeDeployClient{
+		namedValues: map[string]*azure.NamedValue{
+			"hl-client-id":     {Name: "hl-client-id", Value: "old-client", Secret: false},
+			"hl-client-secret": {Name: "hl-client-secret", Value: "[secret]", Secret: true},
+			"hl-host":          {Name: "hl-host", Value: "hiddenlayer.ai", Secret: false},
+		},
+		fragments: map[string]string{
+			"hl-fragment": "<fragment>customer edit</fragment>",
+			"same":        "<fragment />",
+		},
+	}
+
+	preview, err := collectOverwritePreview(client,
+		[]namedValueDef{
+			{name: "hl-client-id", value: "new-client"},
+			{name: "hl-client-secret", value: "new-secret", secret: true},
+			{name: "hl-host", value: "hiddenlayer.ai"},
+			{name: "missing", value: "created"},
+		},
+		[]fragDef{
+			{id: "hl-fragment", xml: "<fragment />"},
+			{id: "same", xml: "<fragment />"},
+			{id: "missing-fragment", xml: "<fragment />"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("collectOverwritePreview error: %v", err)
+	}
+	if len(preview.namedValues) != 2 {
+		t.Fatalf("namedValues = %#v, want 2 entries", preview.namedValues)
+	}
+	if preview.namedValues[0].name != "hl-client-id" || preview.namedValues[0].existingValue != "old-client" || preview.namedValues[0].newValue != "new-client" {
+		t.Fatalf("first named value preview = %#v", preview.namedValues[0])
+	}
+	if preview.namedValues[1].name != "hl-client-secret" || !preview.namedValues[1].secret {
+		t.Fatalf("second named value preview = %#v, want secret name only", preview.namedValues[1])
+	}
+	if len(preview.fragments) != 1 || preview.fragments[0] != "hl-fragment" {
+		t.Fatalf("fragments = %#v, want [hl-fragment]", preview.fragments)
+	}
+}
+
+func TestConfirmOverwriteRequiresYesAndHidesSecretValues(t *testing.T) {
+	preview := overwritePreview{
+		namedValues: []namedValueOverwrite{
+			{name: "hl-client-id", existingValue: "old-client", newValue: "new-client"},
+			{name: "hl-client-secret", secret: true},
+		},
+		fragments: []string{"hl-fragment"},
+	}
+	var output bytes.Buffer
+
+	if err := confirmOverwrite(strings.NewReader("no\n"), &output, preview); err == nil {
+		t.Fatal("expected cancellation")
+	}
+	out := output.String()
+	for _, want := range []string{
+		"hl-client-id: \"old-client\" -> \"new-client\"",
+		"hl-client-secret (secret)",
+		"hl-fragment",
+		"Type 'yes' to continue",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("confirm output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "new-secret") || strings.Contains(out, "[secret] ->") {
+		t.Fatalf("confirm output leaked secret value:\n%s", out)
+	}
+
+	output.Reset()
+	if err := confirmOverwrite(strings.NewReader("yes\n"), &output, preview); err != nil {
+		t.Fatalf("confirmOverwrite error = %v, want nil", err)
 	}
 }

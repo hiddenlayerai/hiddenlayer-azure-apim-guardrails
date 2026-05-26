@@ -59,7 +59,10 @@ hiddenlayer-apim init
 # 5. Edit .env with your Azure and HiddenLayer credentials
 vim .env
 
-# 6. Deploy policy fragments to APIM
+# 6. Optional: list available fragment packages
+hiddenlayer-apim packages
+
+# 7. Deploy policy fragments to APIM
 hiddenlayer-apim deploy
 ```
 
@@ -75,13 +78,16 @@ hiddenlayer-apim init
 # 3. Edit .env with your Azure and HiddenLayer credentials
 vim .env
 
-# 4. Deploy policy fragments to APIM
+# 4. Optional: list available fragment packages
+hiddenlayer-apim packages
+
+# 5. Deploy policy fragments to APIM
 hiddenlayer-apim deploy
 
-# 5. List available APIs
+# 6. List available APIs
 hiddenlayer-apim list
 
-# 6. Apply HiddenLayer policy to an API
+# 7. Apply HiddenLayer policy to an API
 hiddenlayer-apim apply my-openai-api
 ```
 
@@ -118,9 +124,10 @@ After deployment completes, the fragments are available in API Management and ca
 | Command | Description |
 |---------|-------------|
 | `init` | Create a `.env` configuration template |
+| `packages` | List available fragment packages |
 | `deploy` | Deploy HiddenLayer fragments to APIM without overwriting existing resources unless `--overwrite` is used |
 | `list` | List all APIs in the APIM instance |
-| `apply <api-id>` | Apply HiddenLayer policy to an API |
+| `apply <api-id>` | Apply HiddenLayer policy to an API, prompting before policy updates unless `--yes` is used |
 | `remove <api-id>` | Remove HiddenLayer policy from an API |
 | `status` | Check deployment status and verify configuration |
 | `export bicep` | Export package fragments as Bicep + XML artifacts |
@@ -154,6 +161,7 @@ HL_PACKAGE=v2-request-evals
 Fragments are organized into **packages** under `cli/internal/policy/packages/`. Each package contains a `package.json` manifest (including `name`, `version`, `inbound`, `outbound`) and `.xml` fragment files. The CLI auto-discovers available packages at compile time via `//go:embed`.
 
 - Use `--package <name>` on `deploy`, `apply`, `status`, or `remove` to select a specific package.
+- Use `hiddenlayer-apim packages` to list package names and their fragments.
 - Use `deploy --packages <a,b,c>` or `apply --packages <a,b,c>` to deploy or apply multiple packages.
 - Set `HL_PACKAGE` in your `.env` to set a default.
 - If only one package is available, it is auto-selected.
@@ -274,6 +282,9 @@ hiddenlayer-apim deploy --overwrite
 
 # Apply to specific API
 hiddenlayer-apim apply openai-proxy
+
+# Apply without an interactive confirmation prompt
+hiddenlayer-apim apply openai-proxy --yes
 
 # Apply with preview
 hiddenlayer-apim apply openai-proxy --dry-run
