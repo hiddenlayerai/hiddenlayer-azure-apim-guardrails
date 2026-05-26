@@ -128,7 +128,7 @@ After deployment completes, the fragments are available in API Management and ca
 | `deploy` | Deploy HiddenLayer fragments to APIM without overwriting existing resources unless `--overwrite` is used |
 | `list` | List all APIs in the APIM instance |
 | `apply <api-id>` | Apply HiddenLayer policy to an API, prompting before policy updates unless `--yes` is used |
-| `remove <api-id>` | Remove HiddenLayer policy from an API |
+| `remove <api-id>` | Remove selected HiddenLayer package fragments from an API; use `--all` to remove every detected HiddenLayer fragment |
 | `status` | Check deployment status and verify configuration |
 | `export bicep` | Export package fragments as Bicep + XML artifacts |
 | `version` | Print version information |
@@ -300,8 +300,11 @@ hiddenlayer-apim status
 ### Remove Policy
 
 ```bash
-# Remove HiddenLayer from an API
+# Remove a selected HiddenLayer package from an API
 hiddenlayer-apim remove openai-proxy
+
+# Remove every detected HiddenLayer fragment from an API
+hiddenlayer-apim remove openai-proxy --all
 ```
 
 ## Building
