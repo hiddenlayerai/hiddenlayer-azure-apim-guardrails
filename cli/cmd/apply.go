@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ var (
 	applyDryRun   bool
 	applyPackage  string
 	applyPackages []string
+	applyYes      bool
 )
 
 var applyCmd = &cobra.Command{
@@ -29,6 +32,7 @@ If no API ID is provided, uses HL_TARGET_API from configuration.`,
 
 func init() {
 	applyCmd.Flags().BoolVar(&applyDryRun, "dry-run", false, "Preview policy without applying")
+	applyCmd.Flags().BoolVar(&applyYes, "yes", false, "Apply policy changes without confirmation")
 	applyCmd.Flags().StringVar(&applyPackage, "package", "", "fragment package to use (default: auto-select)")
 	applyCmd.Flags().StringSliceVar(&applyPackages, "packages", nil, "fragment packages to apply (comma-separated or repeated; cannot be used with --package)")
 	rootCmd.AddCommand(applyCmd)
@@ -120,6 +124,10 @@ func runApply(cmd *cobra.Command, args []string) error {
 	if existingPolicy == "" {
 		existingPolicy = policy.BasePolicy
 	}
+	if allApplyFragmentsPresent(existingPolicy, pkgs) {
+		printWarning("All requested fragments are already present in policy")
+		return nil
+	}
 
 	newPolicy := existingPolicy
 	for _, pkg := range pkgs {
@@ -141,6 +149,12 @@ func runApply(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 		printInfo("To apply this policy, run without --dry-run")
 		return nil
+	}
+
+	if !applyYes {
+		if err := confirmApplyPolicy(cmd.InOrStdin(), cmd.OutOrStdout(), apiID, pkgs); err != nil {
+			return err
+		}
 	}
 
 	printInfo("Injecting HiddenLayer fragments...")
@@ -178,6 +192,63 @@ func runApply(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	return nil
+}
+
+func allApplyFragmentsPresent(policyXML string, pkgs []*policy.Package) bool {
+	for _, pkg := range pkgs {
+		if !policy.HasHiddenLayerFragments(policyXML, pkg) {
+			return false
+		}
+	}
+	return true
+}
+
+func confirmApplyPolicy(r io.Reader, w io.Writer, apiID string, pkgs []*policy.Package) error {
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "This will update the APIM policy for API %q and add HiddenLayer fragments:\n", apiID)
+	inbound, outbound := summarizeApplyFragments(pkgs)
+	if len(inbound) > 0 {
+		fmt.Fprintf(w, "  inbound:  %s\n", strings.Join(inbound, ", "))
+	}
+	if len(outbound) > 0 {
+		fmt.Fprintf(w, "  outbound: %s\n", strings.Join(outbound, ", "))
+	}
+	fmt.Fprint(w, "Type 'yes' to continue: ")
+
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		return fmt.Errorf("apply cancelled")
+	}
+	if strings.TrimSpace(scanner.Text()) != "yes" {
+		return fmt.Errorf("apply cancelled")
+	}
+	return nil
+}
+
+func summarizeApplyFragments(pkgs []*policy.Package) ([]string, []string) {
+	inbound := []string{}
+	outbound := []string{}
+	seenInbound := map[string]bool{}
+	seenOutbound := map[string]bool{}
+
+	for _, pkg := range pkgs {
+		for _, id := range pkg.InboundIDs() {
+			if seenInbound[id] {
+				continue
+			}
+			seenInbound[id] = true
+			inbound = append(inbound, id)
+		}
+		for _, id := range pkg.OutboundIDs() {
+			if seenOutbound[id] {
+				continue
+			}
+			seenOutbound[id] = true
+			outbound = append(outbound, id)
+		}
+	}
+
+	return inbound, outbound
 }
 
 func resolveApplyPackages(cmd *cobra.Command) ([]*policy.Package, error) {

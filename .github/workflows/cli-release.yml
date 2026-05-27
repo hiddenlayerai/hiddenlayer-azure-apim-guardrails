@@ -424,6 +424,67 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build_bicep:
+    name: Build Bicep bundle
+    runs-on: ubuntu-latest
+    needs: test
+    defaults:
+      run:
+        working-directory: cli
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Build CLI for Bicep export
+        run: |
+          set -euo pipefail
+
+          rm -rf dist export
+          mkdir -p dist
+
+          VERSION="${GITHUB_REF_NAME}"
+          GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+          BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          LDFLAGS="-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=${VERSION} \
+            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.GitCommit=${GIT_COMMIT} \
+            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.BuildDate=${BUILD_DATE}"
+
+          go build -ldflags "$LDFLAGS" -o dist/hiddenlayer-apim .
+
+      - name: Export Bicep bundles
+        run: |
+          set -euo pipefail
+
+          VERSION="${GITHUB_REF_NAME}"
+          BUNDLE_ROOT="dist/hiddenlayer-apim-${VERSION}-bicep"
+
+          rm -rf "$BUNDLE_ROOT"
+          mkdir -p "$BUNDLE_ROOT"
+
+          for package in v1-interactions v2-request-evals v2-response-evals; do
+            ./dist/hiddenlayer-apim export bicep \
+              --package "$package" \
+              --out "$BUNDLE_ROOT/$package"
+          done
+
+          (cd dist && zip -r "hiddenlayer-apim-${VERSION}-bicep.zip" "hiddenlayer-apim-${VERSION}-bicep")
+
+      - name: Upload Bicep artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-bicep
+          path: cli/dist/*-bicep.zip
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
@@ -431,6 +492,7 @@ jobs:
       - build_linux
       - build_macos
       - build_windows
+      - build_bicep
     permissions:
       contents: write
       id-token: write

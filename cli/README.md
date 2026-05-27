@@ -30,6 +30,7 @@ Release assets are published as versioned archives:
 - macOS: `hiddenlayer-apim-vX.Y.Z-darwin-arm64.pkg`, `hiddenlayer-apim-vX.Y.Z-darwin-amd64.pkg`
 - Linux: `hiddenlayer-apim-vX.Y.Z-linux-amd64.tar.gz`, `hiddenlayer-apim-vX.Y.Z-linux-arm64.tar.gz`
 - Windows: `hiddenlayer-apim-vX.Y.Z-windows-amd64.zip`
+- Bicep bundle: `hiddenlayer-apim-vX.Y.Z-bicep.zip`
 
 Each release also includes:
 
@@ -58,7 +59,10 @@ hiddenlayer-apim init
 # 5. Edit .env with your Azure and HiddenLayer credentials
 vim .env
 
-# 6. Deploy policy fragments to APIM
+# 6. Optional: list available fragment packages
+hiddenlayer-apim packages
+
+# 7. Deploy policy fragments to APIM
 hiddenlayer-apim deploy
 ```
 
@@ -74,13 +78,16 @@ hiddenlayer-apim init
 # 3. Edit .env with your Azure and HiddenLayer credentials
 vim .env
 
-# 4. Deploy policy fragments to APIM
+# 4. Optional: list available fragment packages
+hiddenlayer-apim packages
+
+# 5. Deploy policy fragments to APIM
 hiddenlayer-apim deploy
 
-# 5. List available APIs
+# 6. List available APIs
 hiddenlayer-apim list
 
-# 6. Apply HiddenLayer policy to an API
+# 7. Apply HiddenLayer policy to an API
 hiddenlayer-apim apply my-openai-api
 ```
 
@@ -89,8 +96,9 @@ hiddenlayer-apim apply my-openai-api
 Some customers may prefer to deploy the pre-built Bicep bundles published in GitHub releases instead of running the CLI locally.
 
 1. Download and extract the Bicep bundle from the desired GitHub release asset.
-2. Review and update `main.bicepparam` for your APIM environment.
-3. Use Azure CLI to preview and deploy the template:
+2. Choose the package directory to deploy, such as `v1-interactions/`, `v2-request-evals/`, or `v2-response-evals/`.
+3. Set the only required Bicep parameter, `apimServiceName`, to your existing APIM instance name. You can either edit that package's `main.bicepparam` or pass the value with `--parameters`.
+4. Use Azure CLI to preview and deploy one package at a time:
 
 ```bash
 # Authenticate and select the target subscription
@@ -100,27 +108,39 @@ az account set --subscription "<subscription-id>"
 # Preview the deployment
 az deployment group what-if \
   --resource-group <rg> \
-  --template-file ./hl-bicep/main.bicep \
-  --parameters ./hl-bicep/main.bicepparam
+  --template-file ./v2-request-evals/main.bicep \
+  --parameters apimServiceName=<apim-name>
 
 # Deploy the fragments
 az deployment group create \
   --resource-group <rg> \
-  --template-file ./hl-bicep/main.bicep \
-  --parameters ./hl-bicep/main.bicepparam
+  --template-file ./v2-request-evals/main.bicep \
+  --parameters apimServiceName=<apim-name>
 ```
 
-After deployment completes, the fragments are available in API Management and can be referenced from API policies.
+The Bicep templates do not read `.env` and do not deploy HiddenLayer credentials. Before enabling the fragments on an API, create the required APIM named values using your approved secret-management process:
+
+- `hl-client-id`
+- `hl-client-secret` (mark as secret, or reference Key Vault)
+- `hl-project-id`
+- `hl-host`
+- `hl-tenant-id`
+- `hl-oauth-cache-seconds`
+
+After deployment completes, the fragments are available in API Management. To enable them without running the CLI, open the target API in the Azure portal policy editor and add the package's `<include-fragment fragment-id="..." />` entries to the appropriate inbound and outbound policy sections. The package manifest and `fragments/` directory show which fragment IDs belong to each package.
+
+Why choose one workflow over the other: Bicep is useful when your organization requires reviewable infrastructure templates and avoids local CLI access to secrets. The CLI is safer for interactive operations because it validates APIM state first, compares existing resources before overwriting, preserves unrelated API policy rules, and prompts before policy changes.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `init` | Create a `.env` configuration template |
-| `deploy` | Deploy HiddenLayer fragments to APIM |
+| `packages` | List available fragment packages |
+| `deploy` | Deploy HiddenLayer fragments to APIM without overwriting existing resources unless `--overwrite` is used |
 | `list` | List all APIs in the APIM instance |
-| `apply <api-id>` | Apply HiddenLayer policy to an API |
-| `remove <api-id>` | Remove HiddenLayer policy from an API |
+| `apply <api-id>` | Apply HiddenLayer policy to an API, prompting before policy updates unless `--yes` is used |
+| `remove <api-id>` | Remove selected HiddenLayer package fragments from an API; use `--all` to remove every detected HiddenLayer fragment |
 | `status` | Check deployment status and verify configuration |
 | `export bicep` | Export package fragments as Bicep + XML artifacts |
 | `version` | Print version information |
@@ -141,8 +161,11 @@ HL_PROJECT_ID=your-project-id
 HL_TENANT_ID=your-tenant-id
 
 # Optional
-HL_OAUTH_CACHE_SECONDS=5
+AZURE_SUBSCRIPTION_ID=your-subscription-id
+HL_HOST=hiddenlayer.ai
+# HL_OAUTH_CACHE_SECONDS=5
 HL_TARGET_API=default-api-id
+HL_PACKAGE=v2-request-evals
 ```
 
 ## Fragment Packages
@@ -150,12 +173,23 @@ HL_TARGET_API=default-api-id
 Fragments are organized into **packages** under `internal/policy/packages/`. Each package contains a `package.json` manifest (including `name`, `version`, `inbound`, `outbound`) and `.xml` fragment files. The CLI auto-discovers available packages at compile time via `//go:embed`.
 
 - Use `--package <name>` on `deploy`, `apply`, `status`, or `remove` to select a specific package.
+- Use `hiddenlayer-apim packages` to list package names and their fragments.
 - Use `deploy --packages <a,b,c>` to deploy multiple packages in a single command.
 - Use `apply --packages <a,b,c>` to apply multiple packages in a single command.
 - Use `remove --packages <a,b,c>` to remove multiple packages in a single command.
 - Set `HL_PACKAGE` in your `.env` to set a default.
 - If only one package is available, it is auto-selected.
 - If multiple packages exist and no flag/env is set, an interactive menu is shown.
+
+## Non-Destructive Deployment
+
+`hiddenlayer-apim deploy` creates missing HiddenLayer APIM named values and policy fragments. If a named value or fragment already exists:
+
+- matching resources are left unchanged
+- existing secret named values are skipped because Azure does not return secret values for comparison
+- differing non-secret named values or policy fragments cause the command to stop with guidance
+
+Use `hiddenlayer-apim deploy --overwrite` when you intentionally want the CLI to update existing HiddenLayer-managed named values or replace existing HiddenLayer policy fragment XML. `apply` and `remove` operate on API policies by adding or removing HiddenLayer `<include-fragment>` references while preserving unrelated APIM policy rules.
 
 ## Exporting Bicep Artifacts
 
@@ -181,10 +215,10 @@ Deploy with Azure CLI:
 az deployment group create \
   --resource-group <rg> \
   --template-file ./hl-bicep/main.bicep \
-  --parameters ./hl-bicep/main.bicepparam
+  --parameters apimServiceName=<apim-name>
 ```
 
-The same Azure CLI workflow applies to pre-built Bicep bundles downloaded from GitHub releases: extract the bundle, review `main.bicepparam`, then deploy `main.bicep` with `az deployment group create`.
+The same Azure CLI workflow applies to pre-built Bicep bundles downloaded from GitHub releases. Release bundles contain one directory per package; deploy the package directory you want, for example `./v1-interactions/main.bicep` or `./v2-response-evals/main.bicep`. The only Bicep parameter is `apimServiceName`; the resource group is supplied by `az deployment group create --resource-group`.
 
 ## How It Works
 
@@ -226,8 +260,9 @@ Optional override headers consumed by the input fragment and removed before call
 | `HL-Model` | Override model identifier (otherwise read from request body) |
 | `HL-Provider` | Provider name used by `v1-interactions` (defaults to `azure-apim`) |
 | `HL-Runtime-Edge-Provider` | Edge provider name used by the bundled `v2` eval packages (defaults to `azure-apim`) |
-| `HL-Requester-Id` | Requester identifier (defaults to subscription key or IP) |
-| `Hl-Runtime-Session-Id` | Optional session/conversation identifier consumed by the policy and not forwarded to the backend |
+| `HL-Requester-Id` | Requester identifier forwarded to HiddenLayer and removed before the backend call |
+| `HL-Provider-Id` | Provider override forwarded to HiddenLayer and removed before the backend call by the v2 packages |
+| `HL-Runtime-Session-Id` | Optional session/conversation identifier forwarded to HiddenLayer and removed before the backend call |
 
 The `HL-Runtime-Action` response header is set to `BLOCK` or empty for downstream clients.
 
@@ -249,10 +284,13 @@ The v2 evaluation fragments send additional context headers to the HiddenLayer A
 
 | Header | Description |
 |--------|-------------|
+| `HL-Roundtrip-Id` | Per-request identifier used to link request and response evaluations; generated by APIM when absent |
 | `HL-Runtime-Edge-Provider` | Edge provider name forwarded to HiddenLayer; uses the client value when present, otherwise defaults to `azure-apim` |
 | `HL-Runtime-Edge-Provider-Version` | Edge provider version (`0.1`) |
 | `HL-Runtime-Edge-Provider-Metadata` | JSON object with APIM deployment context (API name, version, service name, region, API ID, revision, subscription name, operation ID) |
-| `Hl-Runtime-Session-Id` | Session identifier for conversation tracking; forwards the client-provided `Hl-Runtime-Session-Id` value when present, otherwise sends an empty value |
+| `HL-Runtime-Session-Id` | Session identifier for conversation tracking; forwards the client-provided value when present, otherwise sends an empty value |
+| `HL-Requester-Id` | Optional requester override consumed by Runtime Ingestion API |
+| `HL-Provider-Id` | Optional provider override consumed by Runtime Ingestion API |
 
 ## Examples
 
@@ -262,8 +300,14 @@ The v2 evaluation fragments send additional context headers to the HiddenLayer A
 # Deploy fragments
 hiddenlayer-apim deploy
 
+# Overwrite existing HiddenLayer APIM named values/fragments intentionally
+hiddenlayer-apim deploy --overwrite
+
 # Apply to specific API
 hiddenlayer-apim apply openai-proxy
+
+# Apply without an interactive confirmation prompt
+hiddenlayer-apim apply openai-proxy --yes
 
 # Apply with preview
 hiddenlayer-apim apply openai-proxy --dry-run
@@ -279,8 +323,11 @@ hiddenlayer-apim status
 ### Remove Policy
 
 ```bash
-# Remove HiddenLayer from an API
+# Remove a selected HiddenLayer package from an API
 hiddenlayer-apim remove openai-proxy
+
+# Remove every detected HiddenLayer fragment from an API
+hiddenlayer-apim remove openai-proxy --all
 ```
 
 ## Building

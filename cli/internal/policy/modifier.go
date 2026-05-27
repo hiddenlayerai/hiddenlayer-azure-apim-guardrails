@@ -103,15 +103,11 @@ func RemoveHiddenLayerFragmentsByIDs(existingPolicy string, fragmentIDs []string
 	// Only remove correlationId and global HiddenLayer comments when no HL fragments remain.
 	// This enables "safe partial removal" when multiple packages are applied to the same API policy.
 	if len(DetectHiddenLayerFragmentIDs(result)) == 0 {
-		correlationPattern := `\s*<!--[^>]*correlation[^>]*-->\s*\n?\s*<set-variable\s+name="correlationId"[^/]*/>\s*`
-		reCorr := regexp.MustCompile("(?i)" + correlationPattern)
+		correlationPattern := `\s*(?:<!--\s*Generate correlation ID for request tracking\s*-->\s*\n?)?<set-variable\s+name="correlationId"\s+value="@\(context\.RequestId\.ToString\(\)\)"\s*/>\s*`
+		reCorr := regexp.MustCompile(correlationPattern)
 		result = reCorr.ReplaceAllString(result, "\n")
 
-		correlationPattern2 := `\s*<set-variable\s+name="correlationId"\s+value="@\(context\.RequestId\.ToString\(\)\)"\s*/>\s*`
-		reCorr2 := regexp.MustCompile(correlationPattern2)
-		result = reCorr2.ReplaceAllString(result, "\n")
-
-		hlCommentPattern := `\s*<!--[^>]*HiddenLayer[^>]*-->\s*`
+		hlCommentPattern := `\s*<!--\s*HiddenLayer:\s*[^>]*-->\s*`
 		reHL := regexp.MustCompile("(?i)" + hlCommentPattern)
 		result = reHL.ReplaceAllString(result, "\n")
 	}

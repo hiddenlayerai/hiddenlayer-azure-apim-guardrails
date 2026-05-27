@@ -32,7 +32,7 @@ This CLI helps you:
   • Apply security scanning to specific APIs
   • Monitor and debug the integration`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if cmd.Name() == "init" || cmd.Name() == "version" || cmd.Name() == "export" || cmd.Name() == "bicep" {
+		if cmd.Name() == "init" || cmd.Name() == "version" || cmd.Name() == "packages" || cmd.Name() == "export" || cmd.Name() == "bicep" {
 			return nil
 		}
 

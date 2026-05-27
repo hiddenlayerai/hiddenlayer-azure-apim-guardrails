@@ -490,6 +490,42 @@ func TestRemoveHiddenLayerFragmentsByIDs_PartialRemovalPreservesCorrelationWhenH
 	}
 }
 
+func TestRemoveHiddenLayerFragmentsByIDs_DoesNotRemoveCustomerHiddenLayerComments(t *testing.T) {
+	const policyWithCustomerComment = `<policies>
+    <inbound>
+        <base />
+        <!-- our internal HiddenLayer config notes -->
+        <!-- Generate correlation ID for request tracking -->
+        <set-variable name="correlationId" value="@(context.RequestId.ToString())" />
+        <!-- HiddenLayer: interactions input -->
+        <include-fragment fragment-id="hl-interactions-input" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>`
+
+	result, err := RemoveHiddenLayerFragmentsByIDs(policyWithCustomerComment, []string{"hl-interactions-input"})
+	if err != nil {
+		t.Fatalf("RemoveHiddenLayerFragmentsByIDs() error = %v", err)
+	}
+	if !strings.Contains(result, "our internal HiddenLayer config notes") {
+		t.Fatal("expected customer HiddenLayer comment to be preserved")
+	}
+	if strings.Contains(result, "HiddenLayer: interactions input") {
+		t.Fatal("expected generated HiddenLayer fragment comment to be removed")
+	}
+	if strings.Contains(result, `name="correlationId"`) {
+		t.Fatal("expected generated correlationId variable to be removed")
+	}
+}
+
 func TestInjectHiddenLayerFragments_ReordersOAuthBeforeOtherHLFragments(t *testing.T) {
 	const misordered = `<policies>
     <inbound>
@@ -699,5 +735,54 @@ func TestFormatPolicyForDisplay(t *testing.T) {
 	result = FormatPolicyForDisplay(shortPolicy, 10)
 	if result != shortPolicy {
 		t.Error("Short policy should not be modified")
+	}
+}
+
+func TestLayeredV2PackageRemovalPreservesSharedFragments(t *testing.T) {
+	requestPkg := mustLoadV2RequestEvals(t)
+	responsePkg := mustLoadV2ResponseEvals(t)
+
+	withRequest, err := InjectHiddenLayerFragments(basePolicyOnly, requestPkg)
+	if err != nil {
+		t.Fatalf("InjectHiddenLayerFragments(request) error = %v", err)
+	}
+	withBoth, err := InjectHiddenLayerFragments(withRequest, responsePkg)
+	if err != nil {
+		t.Fatalf("InjectHiddenLayerFragments(response) error = %v", err)
+	}
+
+	shared, err := SharedFragmentIDs()
+	if err != nil {
+		t.Fatalf("SharedFragmentIDs() error = %v", err)
+	}
+	var idsToRemove []string
+	for _, id := range requestPkg.AllFragmentIDs() {
+		if !shared[id] {
+			idsToRemove = append(idsToRemove, id)
+		}
+	}
+
+	result, err := RemoveHiddenLayerFragmentsByIDs(withBoth, idsToRemove)
+	if err != nil {
+		t.Fatalf("RemoveHiddenLayerFragmentsByIDs() error = %v", err)
+	}
+
+	if strings.Contains(result, `fragment-id="hl-v2-request-evaluations"`) {
+		t.Fatal("expected request eval fragment to be removed")
+	}
+	if strings.Contains(result, `fragment-id="hl-v2-surface-runtime-action"`) {
+		t.Fatal("expected request action surface fragment to be removed")
+	}
+	if !strings.Contains(result, `fragment-id="hl-oauth-token-management"`) {
+		t.Fatal("expected shared oauth fragment to remain for response eval package")
+	}
+	if !strings.Contains(result, `fragment-id="hl-v2-response-evals-inbound"`) {
+		t.Fatal("expected response inbound fragment to remain")
+	}
+	if !strings.Contains(result, `fragment-id="hl-v2-response-evaluations"`) {
+		t.Fatal("expected response eval fragment to remain")
+	}
+	if !strings.Contains(result, `name="correlationId"`) {
+		t.Fatal("expected correlationId to remain while HiddenLayer fragments remain")
 	}
 }
