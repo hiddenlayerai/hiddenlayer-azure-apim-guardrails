@@ -96,8 +96,9 @@ hiddenlayer-apim apply my-openai-api
 Some customers may prefer to deploy the pre-built Bicep bundles published in GitHub releases instead of running the CLI locally.
 
 1. Download and extract the Bicep bundle from the desired GitHub release asset.
-2. Review and update `main.bicepparam` for your APIM environment.
-3. Use Azure CLI to preview and deploy the template:
+2. Choose the package directory to deploy, such as `v1-interactions/`, `v2-request-evals/`, or `v2-response-evals/`.
+3. Set the only required Bicep parameter, `apimServiceName`, to your existing APIM instance name. You can either edit that package's `main.bicepparam` or pass the value with `--parameters`.
+4. Use Azure CLI to preview and deploy one package at a time:
 
 ```bash
 # Authenticate and select the target subscription
@@ -107,17 +108,28 @@ az account set --subscription "<subscription-id>"
 # Preview the deployment
 az deployment group what-if \
   --resource-group <rg> \
-  --template-file ./hl-bicep/main.bicep \
-  --parameters ./hl-bicep/main.bicepparam
+  --template-file ./v2-request-evals/main.bicep \
+  --parameters apimServiceName=<apim-name>
 
 # Deploy the fragments
 az deployment group create \
   --resource-group <rg> \
-  --template-file ./hl-bicep/main.bicep \
-  --parameters ./hl-bicep/main.bicepparam
+  --template-file ./v2-request-evals/main.bicep \
+  --parameters apimServiceName=<apim-name>
 ```
 
-After deployment completes, the fragments are available in API Management and can be referenced from API policies.
+The Bicep templates do not read `.env` and do not deploy HiddenLayer credentials. Before enabling the fragments on an API, create the required APIM named values using your approved secret-management process:
+
+- `hl-client-id`
+- `hl-client-secret` (mark as secret, or reference Key Vault)
+- `hl-project-id`
+- `hl-host`
+- `hl-tenant-id`
+- `hl-oauth-cache-seconds`
+
+After deployment completes, the fragments are available in API Management. To enable them without running the CLI, open the target API in the Azure portal policy editor and add the package's `<include-fragment fragment-id="..." />` entries to the appropriate inbound and outbound policy sections. The package manifest and `fragments/` directory show which fragment IDs belong to each package.
+
+Why choose one workflow over the other: Bicep is useful when your organization requires reviewable infrastructure templates and avoids local CLI access to secrets. The CLI is safer for interactive operations because it validates APIM state first, compares existing resources before overwriting, preserves unrelated API policy rules, and prompts before policy changes.
 
 ## Commands
 
@@ -197,10 +209,10 @@ Deploy with Azure CLI:
 az deployment group create \
   --resource-group <rg> \
   --template-file ./hl-bicep/main.bicep \
-  --parameters ./hl-bicep/main.bicepparam
+  --parameters apimServiceName=<apim-name>
 ```
 
-The same Azure CLI workflow applies to pre-built Bicep bundles downloaded from GitHub releases: extract the bundle, review `main.bicepparam`, then deploy `main.bicep` with `az deployment group create`.
+The same Azure CLI workflow applies to pre-built Bicep bundles downloaded from GitHub releases. Release bundles contain one directory per package; deploy the package directory you want, for example `./v1-interactions/main.bicep` or `./v2-response-evals/main.bicep`. The only Bicep parameter is `apimServiceName`; the resource group is supplied by `az deployment group create --resource-group`.
 
 ## How It Works
 
