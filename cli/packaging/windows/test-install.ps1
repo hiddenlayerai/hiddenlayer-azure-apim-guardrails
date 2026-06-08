@@ -39,6 +39,11 @@ function Test-PathEntry {
     return $false
 }
 
+function Get-MachinePath {
+    $environmentKey = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+    return (Get-ItemProperty -LiteralPath $environmentKey -Name Path).Path
+}
+
 function Invoke-Msiexec {
     param(
         [Parameter(Mandatory = $true)]
@@ -60,7 +65,7 @@ try {
         -FailureMessage "MSI install failed."
     $installSucceeded = $true
 
-    if (!(Test-Path $binary)) {
+    if (!(Test-Path -LiteralPath $binary)) {
         throw "Expected installed binary was not found: $binary"
     }
 
@@ -69,13 +74,13 @@ try {
         throw "Installed binary failed version check. Exit code: $LASTEXITCODE"
     }
 
-    $machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+    $machinePath = Get-MachinePath
     if (!(Test-PathEntry -PathValue $machinePath -ExpectedEntry $installDir)) {
         throw "Machine PATH does not contain install directory: $installDir"
     }
 
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-    $env:PATH = "$machinePath;$userPath"
+    $env:PATH = (($machinePath, $userPath) | Where-Object { ![string]::IsNullOrWhiteSpace($_) }) -join ";"
 
     $pathCheck = powershell -NoProfile -Command "Get-Command hiddenlayer-apim -ErrorAction Stop | Select-Object -ExpandProperty Source"
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($pathCheck)) {
@@ -90,20 +95,29 @@ finally {
             -Arguments @("/x", "`"$resolvedMsi`"", "/qn", "/norestart", "/l*v", "`"$UninstallLog`"") `
             -FailureMessage "MSI uninstall failed."
 
-        if (Test-Path $binary) {
-            throw "Installed binary still exists after uninstall: $binary"
-        }
+        $deadline = (Get-Date).AddSeconds(10)
+        $binaryStillExists = $true
+        $pathStillPresent = $true
 
-        $machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
-        if (Test-PathEntry -PathValue $machinePath -ExpectedEntry $installDir) {
-            throw "Machine PATH still contains install directory after uninstall: $installDir"
+        do {
+            $binaryStillExists = Test-Path -LiteralPath $binary
+            $machinePath = Get-MachinePath
+            $pathStillPresent = Test-PathEntry -PathValue $machinePath -ExpectedEntry $installDir
+
+            if (!$binaryStillExists -and !$pathStillPresent) {
+                break
+            }
+
+            Start-Sleep -Milliseconds 250
+        } while ((Get-Date) -lt $deadline)
+
+        if ($binaryStillExists -or $pathStillPresent) {
+            throw "Uninstall verification failed. BinaryExists=$binaryStillExists MachinePathContainsInstallDir=$pathStillPresent InstallDir=$installDir"
         }
 
         $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-        $env:PATH = "$machinePath;$userPath"
-        $postUninstallPathCheck = powershell -NoProfile -Command "Get-Command hiddenlayer-apim -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source"
-        if (![string]::IsNullOrWhiteSpace($postUninstallPathCheck)) {
-            throw "hiddenlayer-apim was still available on PATH after uninstall: $postUninstallPathCheck"
-        }
+        $env:PATH = (($machinePath, $userPath) | Where-Object { ![string]::IsNullOrWhiteSpace($_) }) -join ";"
     }
 }
+
+$global:LASTEXITCODE = 0
