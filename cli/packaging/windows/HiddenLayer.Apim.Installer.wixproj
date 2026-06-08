@@ -1,0 +1,14 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform Condition="'$(InstallerPlatform)' == ''">x64</InstallerPlatform>
+    <Platform>$(InstallerPlatform)</Platform>
+    <OutputName Condition="'$(OutputName)' == ''">hiddenlayer-apim-$(GitTag)-windows-amd64</OutputName>
+    <OutputPath Condition="'$(OutputPath)' == ''">..\..\dist\</OutputPath>
+    <IntermediateOutputPath Condition="'$(IntermediateOutputPath)' == ''">..\..\dist\wix\obj\</IntermediateOutputPath>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
+    <GitTag Condition="'$(GitTag)' == ''">v$(ProductVersion)</GitTag>
+    <SourceBinary Condition="'$(SourceBinary)' == ''">..\..\dist\windows-amd64\hiddenlayer-apim.exe</SourceBinary>
+    <DefineConstants>ProductVersion=$(ProductVersion);GitTag=$(GitTag);SourceBinary=$(SourceBinary)</DefineConstants>
+  </PropertyGroup>
+</Project>
