@@ -29,7 +29,8 @@ Release assets are published as versioned archives:
 
 - macOS: `hiddenlayer-apim-vX.Y.Z-darwin-arm64.pkg`, `hiddenlayer-apim-vX.Y.Z-darwin-amd64.pkg`
 - Linux: `hiddenlayer-apim-vX.Y.Z-linux-amd64.tar.gz`, `hiddenlayer-apim-vX.Y.Z-linux-arm64.tar.gz`
-- Windows: `hiddenlayer-apim-vX.Y.Z-windows-amd64.zip`
+- Windows installer: `hiddenlayer-apim-windows-amd64-vX.Y.Z.msi`
+- Windows portable archive: `hiddenlayer-apim-vX.Y.Z-windows-amd64.zip`
 - Bicep bundle: `hiddenlayer-apim-vX.Y.Z-bicep.zip`
 
 Each release also includes:
@@ -38,17 +39,23 @@ Each release also includes:
 - `checksums.txt.sig` and `checksums.txt.pem`
 - per-archive `.sig` and `.pem` files for cosign verification
 
-macOS packages are Developer ID signed, notarized, and stapled. The `.pkg` installers place the binary in `/usr/local/bin`. Windows binaries are Authenticode signed with Azure Artifact Signing when the Azure signing configuration is present. All published archives and the checksum file are also signed with cosign keyless signing.
+macOS packages are Developer ID signed, notarized, and stapled. The `.pkg` installers place the binary in `/usr/local/bin`. Windows users should prefer the `.msi` installer, which installs the binary under `%ProgramFiles%\HiddenLayer\APIM CLI\` and adds that directory to the machine `PATH`. The Windows `.zip` remains available for portable use. Windows binaries and MSI packages are Authenticode signed with Azure Artifact Signing when the Azure signing configuration is present. All published archives, packages, and the checksum file are also signed with cosign keyless signing.
 
 ### Quick Start (Pre-built Binary)
 
 ```bash
-# 1. Download the macOS installer for your platform
-# Example (Apple Silicon):
+# 1. Download the installer for your platform
+# macOS example (Apple Silicon):
 curl -L -O https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/download/v1.2.3/hiddenlayer-apim-v1.2.3-darwin-arm64.pkg
 
-# 2. Install it (installs to /usr/local/bin)
+# Windows example:
+# curl.exe -L -O https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/download/v1.2.3/hiddenlayer-apim-windows-amd64-v1.2.3.msi
+
+# 2. Install it
+# macOS installs to /usr/local/bin
 sudo installer -pkg hiddenlayer-apim-v1.2.3-darwin-arm64.pkg -target /
+# Windows installs to %ProgramFiles%\HiddenLayer\APIM CLI and updates machine PATH
+# msiexec /i hiddenlayer-apim-windows-amd64-v1.2.3.msi
 
 # 3. Verify the binary works
 hiddenlayer-apim version
@@ -341,13 +348,15 @@ GitHub Actions workflows are configured at the repository root:
 - `.github/workflows/cli-ci.yml` runs on PRs to `main` and pushes to `main` (for `cli/**` changes), and executes:
   - `go test ./...`
   - `make build`
+  - Windows MSI build and install/uninstall smoke tests
 - `.github/workflows/cli-release.yml` runs when a semver tag is pushed (for example `v1.2.3`) and:
   - validates tag format,
   - runs tests,
-  - builds Linux and Windows release archives and macOS `.pkg` installers,
+  - builds Linux release archives, Windows `.msi` installers and `.zip` portable archives, and macOS `.pkg` installers,
   - Developer ID signs, notarizes, and staples macOS packages,
-  - Authenticode-signs the Windows binary with Azure Artifact Signing when Azure signing is configured,
-  - generates `checksums.txt` and cosign-signs each archive plus the checksum file,
+  - Authenticode-signs the Windows binary and MSI with Azure Artifact Signing when Azure signing is configured,
+  - smoke-tests the Windows MSI on a GitHub-hosted Windows runner,
+  - generates `checksums.txt` and cosign-signs each archive/package plus the checksum file,
   - publishes GitHub Release assets.
 
 ### Recommended Merge and Release Flow
@@ -365,6 +374,8 @@ git pull
 git tag v1.2.3
 git push origin v1.2.3
 ```
+
+The release workflow can also be manually dispatched with an RC version such as `v1.2.3-rc.1` to validate a branch build through the GitHub Release path before final release.
 
 Branch protection setup for these requirements is documented in `.github/BRANCH_PROTECTION.md`.
 

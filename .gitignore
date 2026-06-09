@@ -7,6 +7,8 @@ cli/hiddenlayer-apim.exe
 
 # CLI build output
 cli/dist/
+cli/packaging/windows/bin/
+cli/packaging/windows/obj/
 
 # CLI test artifacts
 cli/coverage.out

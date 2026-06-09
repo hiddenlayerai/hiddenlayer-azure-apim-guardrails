@@ -1,0 +1,54 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="HiddenLayer APIM CLI"
+    Manufacturer="HiddenLayer"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="{58F7B807-5B46-48D6-832A-FC6C8A816C7C}"
+    Scope="perMachine">
+
+    <SummaryInformation
+      Description="HiddenLayer APIM CLI $(var.GitTag)"
+      Manufacturer="HiddenLayer" />
+
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      DowngradeErrorMessage="A newer version of HiddenLayer APIM CLI is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="CompanyFolder" Name="HiddenLayer">
+        <Directory Id="INSTALLFOLDER" Name="APIM CLI">
+          <Component Id="HiddenLayerApimExe" Guid="{43332FA5-1C28-4ED6-94D6-59D859D9C144}" Bitness="always64">
+            <File
+              Id="HiddenLayerApimExeFile"
+              Source="$(var.SourceBinary)"
+              Name="hiddenlayer-apim.exe"
+              KeyPath="yes" />
+          </Component>
+
+          <Component Id="MachinePathEnvironment" Guid="{578187BD-64BE-4239-A9B2-C4C693D3104E}" Bitness="always64">
+            <Environment
+              Id="HiddenLayerApimPath"
+              Name="PATH"
+              Value="[INSTALLFOLDER]"
+              Action="set"
+              Part="last"
+              System="yes" />
+            <RegistryValue
+              Root="HKLM"
+              Key="Software\HiddenLayer\APIM CLI"
+              Name="InstallFolder"
+              Type="string"
+              Value="[INSTALLFOLDER]"
+              KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="HiddenLayer APIM CLI" Level="1">
+      <ComponentRef Id="HiddenLayerApimExe" />
+      <ComponentRef Id="MachinePathEnvironment" />
+    </Feature>
+  </Package>
+</Wix>

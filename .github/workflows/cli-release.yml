@@ -4,9 +4,18 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to build and publish, for example v1.2.3-rc.1"
+        required: true
+        type: string
 
 permissions:
   contents: read
+
+env:
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   test:
@@ -29,7 +38,7 @@ jobs:
       - name: Validate semver tag
         shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${RELEASE_VERSION}"
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
             echo "Tag '$TAG' is not a valid semver tag (expected vMAJOR.MINOR.PATCH[-PRERELEASE])."
             exit 1
@@ -63,7 +72,7 @@ jobs:
           rm -rf dist
           mkdir -p dist/linux-amd64 dist/linux-arm64
 
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${RELEASE_VERSION}"
           GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
@@ -194,7 +203,7 @@ jobs:
           rm -rf dist
           mkdir -p dist/darwin-amd64 dist/darwin-arm64
 
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${RELEASE_VERSION}"
           GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
@@ -321,7 +330,7 @@ jobs:
           rm -rf ~/private_keys
 
   build_windows:
-    name: Build Windows archive
+    name: Build Windows artifacts
     runs-on: windows-latest
     needs: test
     environment: release
@@ -349,12 +358,17 @@ jobs:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
 
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
       - name: Build Windows binary
         run: |
           Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path dist\windows-amd64 | Out-Null
 
-          $version = "${{ github.ref_name }}"
+          $version = "${env:RELEASE_VERSION}"
           try {
             $gitCommit = (git rev-parse --short HEAD).Trim()
           } catch {
@@ -368,6 +382,11 @@ jobs:
           go build -ldflags $ldflags -o dist\windows-amd64\hiddenlayer-apim.exe .
           Remove-Item Env:GOOS -ErrorAction SilentlyContinue
           Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
+
+      - name: Warn when Windows signing is skipped
+        if: env.AZURE_CLIENT_ID == '' || env.AZURE_TENANT_ID == '' || env.AZURE_SUBSCRIPTION_ID == '' || env.AZURE_CODESIGN_ENDPOINT == '' || env.AZURE_CODESIGN_ACCOUNT_NAME == '' || env.AZURE_CODESIGN_PROFILE_NAME == ''
+        run: |
+          Write-Warning "Azure Artifact Signing is not configured; Windows .exe and .msi artifacts will be unsigned."
 
       - name: Azure login
         if: env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CODESIGN_ENDPOINT != '' && env.AZURE_CODESIGN_ACCOUNT_NAME != '' && env.AZURE_CODESIGN_PROFILE_NAME != ''
@@ -400,9 +419,74 @@ jobs:
           exclude-azure-developer-cli-credential: true
           exclude-interactive-browser-credential: true
 
+      - name: Verify Windows binary signature
+        if: env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CODESIGN_ENDPOINT != '' && env.AZURE_CODESIGN_ACCOUNT_NAME != '' && env.AZURE_CODESIGN_PROFILE_NAME != ''
+        run: |
+          $signature = Get-AuthenticodeSignature dist\windows-amd64\hiddenlayer-apim.exe
+          if ($signature.Status -ne "Valid") {
+            $signature | Format-List * | Out-String | Write-Host
+            throw "Windows binary signature verification failed: $($signature.Status)"
+          }
+
+      - name: Build Windows MSI
+        run: |
+          .\scripts\build-windows-msi.ps1 -Version "${env:RELEASE_VERSION}" -SkipBinaryBuild
+
+      - name: Sign Windows MSI with Azure Artifact Signing
+        if: env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CODESIGN_ENDPOINT != '' && env.AZURE_CODESIGN_ACCOUNT_NAME != '' && env.AZURE_CODESIGN_PROFILE_NAME != ''
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ vars.AZURE_CODESIGN_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODESIGN_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CODESIGN_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}\cli\dist
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Verify Windows MSI signature
+        if: env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CODESIGN_ENDPOINT != '' && env.AZURE_CODESIGN_ACCOUNT_NAME != '' && env.AZURE_CODESIGN_PROFILE_NAME != ''
+        run: |
+          $msi = "dist\hiddenlayer-apim-windows-amd64-${env:RELEASE_VERSION}.msi"
+          $signature = Get-AuthenticodeSignature $msi
+          if ($signature.Status -ne "Valid") {
+            $signature | Format-List * | Out-String | Write-Host
+            throw "Windows MSI signature verification failed: $($signature.Status)"
+          }
+
+      - name: Smoke test Windows MSI
+        run: |
+          $msi = "dist\hiddenlayer-apim-windows-amd64-${env:RELEASE_VERSION}.msi"
+          .\packaging\windows\test-install.ps1 `
+            -MsiPath $msi `
+            -InstallLog "$env:RUNNER_TEMP\hiddenlayer-apim-install.log" `
+            -UninstallLog "$env:RUNNER_TEMP\hiddenlayer-apim-uninstall.log"
+
+      - name: Upload Windows MSI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-windows-msi-logs
+          path: |
+            ${{ runner.temp }}\hiddenlayer-apim-install.log
+            ${{ runner.temp }}\hiddenlayer-apim-uninstall.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Package Windows archive
         run: |
-          $version = "${{ github.ref_name }}"
+          $version = "${env:RELEASE_VERSION}"
           $archive = "dist\hiddenlayer-apim-$version-windows-amd64.zip"
           $packageDir = "dist\windows-package"
 
@@ -420,7 +504,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cli-windows
-          path: cli/dist/*.zip
+          path: |
+            cli/dist/*.zip
+            cli/dist/*.msi
           if-no-files-found: error
           retention-days: 7
 
@@ -449,7 +535,7 @@ jobs:
           rm -rf dist export
           mkdir -p dist
 
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${RELEASE_VERSION}"
           GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
@@ -463,7 +549,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${RELEASE_VERSION}"
           BUNDLE_ROOT="dist/hiddenlayer-apim-${VERSION}-bicep"
 
           rm -rf "$BUNDLE_ROOT"
@@ -508,7 +594,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum *.tar.gz *.pkg *.zip > checksums.txt
+          sha256sum *.tar.gz *.pkg *.zip *.msi > checksums.txt
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -519,7 +605,7 @@ jobs:
           set -euo pipefail
           cd dist
 
-          for artifact in *.tar.gz *.pkg *.zip checksums.txt; do
+          for artifact in *.tar.gz *.pkg *.zip *.msi checksums.txt; do
             cosign sign-blob --yes \
               --output-signature "${artifact}.sig" \
               --output-certificate "${artifact}.pem" \
@@ -529,13 +615,15 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_VERSION }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
             dist/*.tar.gz
             dist/*.pkg
             dist/*.zip
+            dist/*.msi
             dist/checksums.txt
             dist/*.sig
             dist/*.pem

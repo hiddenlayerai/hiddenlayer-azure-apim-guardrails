@@ -7,12 +7,14 @@ on:
       - "cli/**"
       - ".github/workflows/cli-ci.yml"
       - ".github/workflows/cli-release.yml"
+      - "cli/packaging/windows/**"
   push:
     branches: [main]
     paths:
       - "cli/**"
       - ".github/workflows/cli-ci.yml"
       - ".github/workflows/cli-release.yml"
+      - "cli/packaging/windows/**"
 
 jobs:
   test:
@@ -53,3 +55,50 @@ jobs:
 
       - name: Build CLI
         run: make build
+
+  windows_msi:
+    name: Windows MSI
+    runs-on: windows-latest
+    needs: test
+    defaults:
+      run:
+        working-directory: cli
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build Windows MSI
+        run: |
+          .\scripts\build-windows-msi.ps1 -Version "v0.1.0-ci.${{ github.run_number }}"
+
+      - name: Smoke test Windows MSI
+        run: |
+          $version = "v0.1.0-ci.${{ github.run_number }}"
+          $msi = "dist\hiddenlayer-apim-windows-amd64-$version.msi"
+          .\packaging\windows\test-install.ps1 `
+            -MsiPath $msi `
+            -InstallLog "$env:RUNNER_TEMP\hiddenlayer-apim-install.log" `
+            -UninstallLog "$env:RUNNER_TEMP\hiddenlayer-apim-uninstall.log"
+
+      - name: Upload Windows MSI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-windows-msi-logs
+          path: |
+            ${{ runner.temp }}\hiddenlayer-apim-install.log
+            ${{ runner.temp }}\hiddenlayer-apim-uninstall.log
+          if-no-files-found: ignore
+          retention-days: 7
