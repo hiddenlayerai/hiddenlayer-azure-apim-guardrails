@@ -86,7 +86,7 @@ jobs:
       - name: Smoke test Windows MSI
         run: |
           $version = "v0.1.0-ci.${{ github.run_number }}"
-          $msi = "dist\hiddenlayer-apim-$version-windows-amd64.msi"
+          $msi = "dist\hiddenlayer-apim-windows-amd64-$version.msi"
           .\packaging\windows\test-install.ps1 `
             -MsiPath $msi `
             -InstallLog "$env:RUNNER_TEMP\hiddenlayer-apim-install.log" `

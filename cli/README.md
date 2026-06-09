@@ -29,7 +29,7 @@ Release assets are published as versioned archives:
 
 - macOS: `hiddenlayer-apim-vX.Y.Z-darwin-arm64.pkg`, `hiddenlayer-apim-vX.Y.Z-darwin-amd64.pkg`
 - Linux: `hiddenlayer-apim-vX.Y.Z-linux-amd64.tar.gz`, `hiddenlayer-apim-vX.Y.Z-linux-arm64.tar.gz`
-- Windows installer: `hiddenlayer-apim-vX.Y.Z-windows-amd64.msi`
+- Windows installer: `hiddenlayer-apim-windows-amd64-vX.Y.Z.msi`
 - Windows portable archive: `hiddenlayer-apim-vX.Y.Z-windows-amd64.zip`
 - Bicep bundle: `hiddenlayer-apim-vX.Y.Z-bicep.zip`
 
@@ -49,13 +49,13 @@ macOS packages are Developer ID signed, notarized, and stapled. The `.pkg` insta
 curl -L -O https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/download/v1.2.3/hiddenlayer-apim-v1.2.3-darwin-arm64.pkg
 
 # Windows example:
-# curl.exe -L -O https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/download/v1.2.3/hiddenlayer-apim-v1.2.3-windows-amd64.msi
+# curl.exe -L -O https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/download/v1.2.3/hiddenlayer-apim-windows-amd64-v1.2.3.msi
 
 # 2. Install it
 # macOS installs to /usr/local/bin
 sudo installer -pkg hiddenlayer-apim-v1.2.3-darwin-arm64.pkg -target /
 # Windows installs to %ProgramFiles%\HiddenLayer\APIM CLI and updates machine PATH
-# msiexec /i hiddenlayer-apim-v1.2.3-windows-amd64.msi
+# msiexec /i hiddenlayer-apim-windows-amd64-v1.2.3.msi
 
 # 3. Verify the binary works
 hiddenlayer-apim version

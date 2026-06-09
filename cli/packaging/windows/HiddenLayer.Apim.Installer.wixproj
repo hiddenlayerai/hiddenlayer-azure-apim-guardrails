@@ -3,7 +3,7 @@
     <OutputType>Package</OutputType>
     <InstallerPlatform Condition="'$(InstallerPlatform)' == ''">x64</InstallerPlatform>
     <Platform>$(InstallerPlatform)</Platform>
-    <OutputName Condition="'$(OutputName)' == ''">hiddenlayer-apim-$(GitTag)-windows-amd64</OutputName>
+    <OutputName Condition="'$(OutputName)' == ''">hiddenlayer-apim-windows-amd64-$(GitTag)</OutputName>
     <OutputPath Condition="'$(OutputPath)' == ''">..\..\dist\</OutputPath>
     <IntermediateOutputPath Condition="'$(IntermediateOutputPath)' == ''">..\..\dist\wix\obj\</IntermediateOutputPath>
     <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>

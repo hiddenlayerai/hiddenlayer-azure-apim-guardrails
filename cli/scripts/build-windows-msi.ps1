@@ -31,7 +31,7 @@ $productVersion = "$($Matches.major).$($Matches.minor).$($Matches.patch)"
 $dist = Join-Path $PWD "dist"
 $binaryDir = Join-Path $dist "windows-amd64"
 $binary = Join-Path $binaryDir "hiddenlayer-apim.exe"
-$outputName = "hiddenlayer-apim-$Version-windows-amd64"
+$outputName = "hiddenlayer-apim-windows-amd64-$Version"
 $msi = Join-Path $dist "$outputName.msi"
 
 if (!$SkipBinaryBuild) {

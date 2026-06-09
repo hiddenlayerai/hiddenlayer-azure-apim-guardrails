@@ -34,7 +34,7 @@ dotnet build packaging\windows\HiddenLayer.Apim.Installer.wixproj `
   -p:GitTag=$version `
   -p:SourceBinary="$PWD\dist\windows-amd64\hiddenlayer-apim.exe" `
   -p:OutputPath="$PWD\dist\" `
-  -p:OutputName="hiddenlayer-apim-$version-windows-amd64"
+  -p:OutputName="hiddenlayer-apim-windows-amd64-$version"
 ```
 
 The release workflow signs the `.exe` before MSI packaging when Azure signing is configured, then signs the `.msi` after packaging.
