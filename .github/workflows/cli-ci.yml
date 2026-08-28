@@ -3,53 +3,176 @@ name: CLI CI
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "cli/**"
-      - ".github/workflows/cli-ci.yml"
-      - ".github/workflows/cli-release.yml"
   push:
     branches: [main]
-    paths:
-      - "cli/**"
-      - ".github/workflows/cli-ci.yml"
-      - ".github/workflows/cli-release.yml"
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: false
+        default: ""
 
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: cli
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
+
+      - name: Warm up az bicep
+        run: |
+          for i in 1 2 3; do
+            if az bicep install; then
+              break
+            fi
+            if [ "$i" -lt 3 ]; then
+              sleep 10
+            fi
+          done
+          az bicep version
 
       - name: Run tests
         run: go test ./...
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     needs: test
     defaults:
       run:
         working-directory: cli
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
 
-      - name: Build CLI
-        run: make build
+      - name: Resolve version metadata
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$VERSION" ]; then
+            # Dev builds keep the leading v, mirroring the cli/Makefile default version.
+            STAMP="v0.1.0-dev+$(git rev-parse --short HEAD)"
+          else
+            if [[ "$VERSION" != v* ]]; then
+              echo "version input must start with 'v', got: $VERSION" >&2
+              exit 1
+            fi
+            STAMP="${VERSION#v}"
+          fi
+          COMMIT=$(git rev-parse HEAD)
+          # Commit date, not wall clock, so re-builds of the same commit are deterministic.
+          BUILD_DATE=$(git show -s --format=%cI HEAD)
+          {
+            echo "STAMP=$STAMP"
+            echo "COMMIT=$COMMIT"
+            echo "BUILD_DATE=$BUILD_DATE"
+          } >> "$GITHUB_ENV"
+
+      - name: Cross-compile release binaries
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          MOD="github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli"
+          LDFLAGS="-X ${MOD}/cmd.Version=${STAMP} \
+            -X ${MOD}/cmd.GitCommit=${COMMIT} \
+            -X ${MOD}/cmd.BuildDate=${BUILD_DATE}"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            ext=""
+            if [ "$goos" = "windows" ]; then
+              ext=".exe"
+            fi
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "$LDFLAGS" \
+              -o "dist/${goos}-${goarch}/hiddenlayer-apim${ext}" .
+          done
+
+      # A linker-stamped var is invisible to go test, so this catches a renamed/moved Version var at PR time.
+      - name: Verify version stamp target
+        if: inputs.version == ''
+        run: |
+          go build -ldflags "-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=0.0.0-stamp-probe" -o "$RUNNER_TEMP/stamp-probe" .
+          got="$("$RUNNER_TEMP/stamp-probe" version | awk '{print $2}')"
+          want="0.0.0-stamp-probe"
+          echo "got:  $got"
+          echo "want: $want"
+          if [ "$got" != "$want" ]; then
+            exit 1
+          fi
+
+      - name: Export Bicep bundles
+        run: |
+          set -euo pipefail
+          rm -rf dist/bicep
+          mkdir -p dist/bicep
+          for package in v1-interactions v2-request-evals v2-response-evals; do
+            ./dist/linux-amd64/hiddenlayer-apim export bicep \
+              --package "$package" \
+              --out "dist/bicep/$package"
+          done
+
+      - name: Upload linux-amd64 binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apim-linux-amd64
+          path: cli/dist/linux-amd64/
+          if-no-files-found: error
+
+      - name: Upload linux-arm64 binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apim-linux-arm64
+          path: cli/dist/linux-arm64/
+          if-no-files-found: error
+
+      - name: Upload darwin-amd64 binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apim-darwin-amd64
+          path: cli/dist/darwin-amd64/
+          if-no-files-found: error
+
+      - name: Upload darwin-arm64 binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apim-darwin-arm64
+          path: cli/dist/darwin-arm64/
+          if-no-files-found: error
+
+      - name: Upload windows-amd64 binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apim-windows-amd64
+          path: cli/dist/windows-amd64/
+          if-no-files-found: error
+
+      - name: Upload Bicep export
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apim-bicep
+          path: cli/dist/bicep/
+          if-no-files-found: error
