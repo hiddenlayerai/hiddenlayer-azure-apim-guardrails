@@ -1,0 +1,118 @@
+# .github/actions/package-macos — the single definition of how CI assembles the
+# darwin universal binary and builds the installer .pkg.
+#
+# Prerequisites (callers provide these; the action owns no credentials):
+#   1. actions/checkout
+#   2. the per-arch darwin binaries exist at the input paths — the caller builds
+#      them or downloads the tested build artifacts.
+#   3. for a SIGNED build, the caller has already imported the Apple signing
+#      identities and passes them in; omitting them yields an ad-hoc/unsigned pkg.
+#      Cert import + notarization stay in the caller — this action is secret-free.
+#
+# Packaging itself stays in cli/packaging/macos/build-pkg.sh; this action is the
+# one place that knows how to lipo the two slices into a universal binary and
+# invoke build-pkg.sh consistently across CI and release.
+name: Package macOS pkg
+description: >-
+  Assembles the darwin universal binary from the per-arch slices and builds the
+  installer .pkg via cli/packaging/macos/build-pkg.sh. Signs when Developer ID
+  identities are supplied, otherwise builds ad-hoc/unsigned. Owns no
+  credentials; callers import certs and notarize.
+
+inputs:
+  version:
+    description: Package version (e.g. v1.2.3 or v0.1.0-ci.N).
+    required: true
+  arm64-binary:
+    description: Path to the darwin/arm64 hiddenlayer-apim binary.
+    required: true
+  amd64-binary:
+    description: Path to the darwin/amd64 hiddenlayer-apim binary.
+    required: true
+  out:
+    description: Output directory for the built .pkg.
+    required: false
+    default: dist
+  signing-identity:
+    description: >-
+      Developer ID Application identity for codesigning the binary. Empty signs
+      the binary ad-hoc.
+    required: false
+    default: ""
+  installer-identity:
+    description: >-
+      Developer ID Installer identity for signing the .pkg. Empty produces an
+      unsigned .pkg.
+    required: false
+    default: ""
+
+outputs:
+  pkg:
+    description: Path to the built .pkg.
+    value: ${{ steps.build.outputs.pkg }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create universal binary
+      id: universal
+      shell: bash
+      env:
+        ARM64_BINARY: ${{ inputs.arm64-binary }}
+        AMD64_BINARY: ${{ inputs.amd64-binary }}
+        # The single source of the universal binary path; emitted as a step
+        # output below so the build step consumes the exact same value.
+        UNIVERSAL_BINARY: ${{ runner.temp }}/hiddenlayer-apim-universal
+      run: |
+        set -euo pipefail
+
+        # download-artifact does not preserve file modes; restore the executable
+        # bit before lipo/signing.
+        chmod +x "$ARM64_BINARY" "$AMD64_BINARY"
+
+        lipo -create \
+          -output "$UNIVERSAL_BINARY" \
+          "$ARM64_BINARY" \
+          "$AMD64_BINARY"
+        chmod +x "$UNIVERSAL_BINARY"
+
+        lipo -archs "$UNIVERSAL_BINARY"
+        # Exact-token match: a substring grep would let e.g. x86_64h satisfy x86_64.
+        lipo -archs "$UNIVERSAL_BINARY" | tr ' ' '\n' | grep -qx 'x86_64'
+        lipo -archs "$UNIVERSAL_BINARY" | tr ' ' '\n' | grep -qx 'arm64'
+
+        # Hand the path to the Build macOS package step as an action-scoped output.
+        echo "binary=$UNIVERSAL_BINARY" >> "$GITHUB_OUTPUT"
+
+    - name: Build macOS package
+      id: build
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        OUT: ${{ inputs.out }}
+        SIGNING_IDENTITY: ${{ inputs.signing-identity }}
+        INSTALLER_IDENTITY: ${{ inputs.installer-identity }}
+        UNIVERSAL_BINARY: ${{ steps.universal.outputs.binary }}
+      run: |
+        set -euo pipefail
+
+        ARGS=(--binary "$UNIVERSAL_BINARY" --version "$VERSION" --out "$OUT")
+
+        # Signing is optional: with an identity build-pkg.sh codesigns the binary
+        # / signs the pkg; without one it builds ad-hoc/unsigned. The release
+        # caller enforces "must be signed" via its own preflight, so this action
+        # stays policy-neutral.
+        if [ -n "$SIGNING_IDENTITY" ]; then
+          ARGS+=(--identity "$SIGNING_IDENTITY")
+        fi
+        if [ -n "$INSTALLER_IDENTITY" ]; then
+          ARGS+=(--installer-identity "$INSTALLER_IDENTITY")
+        fi
+
+        # ${ARGS[@]+...} keeps the expansion safe under `set -u` on the macOS
+        # system bash (3.2), which errors on expanding an empty array.
+        ./cli/packaging/macos/build-pkg.sh ${ARGS[@]+"${ARGS[@]}"}
+
+        PKG="$OUT/hiddenlayer-apim-$VERSION-darwin-universal.pkg"
+        [ -f "$PKG" ] || { echo "build-pkg.sh did not produce expected pkg: $PKG"; ls -la "$OUT"; exit 1; }
+        echo "pkg=$PKG" >> "$GITHUB_OUTPUT"
