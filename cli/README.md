@@ -27,42 +27,47 @@ Download from the [releases page](https://github.com/hiddenlayerai/hiddenlayer-a
 
 Release assets are published as versioned archives:
 
-- macOS: `hiddenlayer-apim-vX.Y.Z-darwin-arm64.pkg`, `hiddenlayer-apim-vX.Y.Z-darwin-amd64.pkg`
+- macOS: `hiddenlayer-apim-vX.Y.Z-darwin-universal.pkg` (universal installer) and `hiddenlayer-apim-vX.Y.Z-darwin-universal.tar.gz` (signed sideload binary for installs without the pkg)
 - Linux: `hiddenlayer-apim-vX.Y.Z-linux-amd64.tar.gz`, `hiddenlayer-apim-vX.Y.Z-linux-arm64.tar.gz`
 - Windows: `hiddenlayer-apim-vX.Y.Z-windows-amd64.zip`
 - Bicep bundle: `hiddenlayer-apim-vX.Y.Z-bicep.zip`
 
 Each release also includes:
 
-- `checksums.txt`
-- `checksums.txt.sig` and `checksums.txt.pem`
-- per-archive `.sig` and `.pem` files for cosign verification
+- per-platform checksum files: `linux-checksums.txt`, `darwin-checksums.txt`, `windows-checksums.txt`, `bicep-checksums.txt`
+- a Sigstore bundle (`<asset>.sigstore.json`) for every asset, checksum files included
 
-macOS packages are Developer ID signed, notarized, and stapled. The `.pkg` installers place the binary in `/usr/local/bin`. Windows binaries are Authenticode signed with Azure Artifact Signing when the Azure signing configuration is present. All published archives and the checksum file are also signed with cosign keyless signing.
+See `docs/signing.md` for the full verification recipe.
+
+macOS packages are Developer ID signed, notarized, and stapled. The `.pkg` installers place the binary in `/usr/local/bin`. Windows binaries are Authenticode signed via Azure Artifact Signing. A release never degrades to unsigned output — missing signing configuration fails the release.
 
 ### Quick Start (Pre-built Binary)
 
 ```bash
-# 1. Download the macOS installer for your platform
-# Example (Apple Silicon):
-curl -L -O https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/download/v1.2.3/hiddenlayer-apim-v1.2.3-darwin-arm64.pkg
+# 1. Download the macOS installer (universal binary) and the darwin checksums file
+curl -L -O https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/download/v1.2.3/hiddenlayer-apim-v1.2.3-darwin-universal.pkg
+curl -L -O https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/releases/download/v1.2.3/darwin-checksums.txt
 
-# 2. Install it (installs to /usr/local/bin)
-sudo installer -pkg hiddenlayer-apim-v1.2.3-darwin-arm64.pkg -target /
+# 2. Verify the download (full recipe, including cosign: docs/signing.md)
+shasum -a 256 -c --ignore-missing darwin-checksums.txt
+pkgutil --check-signature hiddenlayer-apim-v1.2.3-darwin-universal.pkg
 
-# 3. Verify the binary works
+# 3. Install it (installs to /usr/local/bin)
+sudo installer -pkg hiddenlayer-apim-v1.2.3-darwin-universal.pkg -target /
+
+# 4. Verify the binary works
 hiddenlayer-apim version
 
-# 4. Initialize configuration
+# 5. Initialize configuration
 hiddenlayer-apim init
 
-# 5. Edit .env with your Azure and HiddenLayer credentials
+# 6. Edit .env with your Azure and HiddenLayer credentials
 vim .env
 
-# 6. Optional: list available fragment packages
+# 7. Optional: list available fragment packages
 hiddenlayer-apim packages
 
-# 7. Deploy policy fragments to APIM
+# 8. Deploy policy fragments to APIM
 hiddenlayer-apim deploy
 ```
 
@@ -218,7 +223,7 @@ az deployment group create \
   --parameters apimServiceName=<apim-name>
 ```
 
-The same Azure CLI workflow applies to pre-built Bicep bundles downloaded from GitHub releases. Release bundles contain one directory per package; deploy the package directory you want, for example `./v1-interactions/main.bicep` or `./v2-response-evals/main.bicep`. The only Bicep parameter is `apimServiceName`; the resource group is supplied by `az deployment group create --resource-group`.
+The same Azure CLI workflow applies to pre-built Bicep bundles downloaded from GitHub releases. The bicep zip contains the three package directories (`v1-interactions`, `v2-request-evals`, `v2-response-evals`) at the archive root; deploy the package directory you want, for example `./v1-interactions/main.bicep` or `./v2-response-evals/main.bicep`. The only Bicep parameter is `apimServiceName`; the resource group is supplied by `az deployment group create --resource-group`.
 
 ## How It Works
 
@@ -336,9 +341,6 @@ hiddenlayer-apim remove openai-proxy --all
 # Build for current platform
 make build
 
-# Build for all platforms
-make build-all
-
 # Install locally
 make install
 ```
@@ -347,17 +349,16 @@ make install
 
 GitHub Actions workflows are configured at the repository root:
 
-- `.github/workflows/cli-ci.yml` runs on PRs to `main` and pushes to `main` (for `cli/**` changes), and executes:
+- `.github/workflows/cli-ci.yml` runs on every PR to `main` and on pushes to `main`, and executes:
   - `go test ./...`
-  - `make build`
-- `.github/workflows/cli-release.yml` runs when a semver tag is pushed (for example `v1.2.3`) and:
-  - validates tag format,
-  - runs tests,
-  - builds Linux and Windows release archives and macOS `.pkg` installers,
-  - Developer ID signs, notarizes, and staples macOS packages,
-  - Authenticode-signs the Windows binary with Azure Artifact Signing when Azure signing is configured,
-  - generates `checksums.txt` and cosign-signs each archive plus the checksum file,
-  - publishes GitHub Release assets.
+  - a cross-compile of every release platform binary (the same `Build` job the release pipeline reuses)
+- `.github/workflows/packaging-ci.yml` exercises unsigned macOS `.pkg` builds pre-merge, validating the packaging surface before changes reach a release.
+- `.github/workflows/cli-release.yml` runs when a semver tag on `main` is pushed (for example `v1.2.3`) and:
+  - validates the tag format and that it points at `main`,
+  - builds all platform binaries via the CI workflow,
+  - Developer ID signs, notarizes, and staples the macOS package, Authenticode-signs the Windows binary via Azure Artifact Signing, and produces per-platform checksum files plus a Sigstore bundle for every asset — missing signing configuration fails the release instead of degrading to unsigned output,
+  - verifies every signature and attaches all assets to a draft GitHub release,
+  - after environment approval and the publish gate pass, publishes the draft with generated release notes.
 
 ### Recommended Merge and Release Flow
 
@@ -374,6 +375,8 @@ git pull
 git tag v1.2.3
 git push origin v1.2.3
 ```
+
+The tag push starts the release pipeline: it builds via CI, signs and verifies every artifact, and attaches everything to a draft release. Once environment approval and the publish gate pass, the draft is published with generated release notes.
 
 Branch protection setup for these requirements is documented in `.github/BRANCH_PROTECTION.md`.
 

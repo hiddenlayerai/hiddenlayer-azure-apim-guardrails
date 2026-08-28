@@ -37,6 +37,26 @@ To get started with contributing to HiddenLayer Azure APIM Guardrails, follow th
    ```
 6. Open a pull request on the original repository.
 
+## Releasing
+
+Releases are cut by maintainers. The release pipeline (`.github/workflows/cli-release.yml`) does the heavy lifting; the maintainer contract is:
+
+1. Push a SemVer tag `vX.Y.Z` pointing at a commit on `main`.
+   ```
+   git tag v1.2.3 && git push origin v1.2.3
+   ```
+   The pipeline enforces both the tag shape (SemVer, with hyphen-only prerelease suffixes such as `v1.2.3-rc1`) and that the tagged commit is reachable from `main`.
+
+2. **Never tag a commit that predates the current release pipeline.** A tag push runs the workflow file as it exists at the tagged commit — that is, the old pipeline — not the current one on `main`.
+
+3. The pipeline builds and signs everything into a **draft** release. Publication only happens after the `release` environment approval and the publish gate. Tags with a prerelease suffix (e.g. `-rc1`) publish flagged as prereleases.
+
+4. If a run fails, use "Re-run failed jobs" only, and only while the release is still a draft. Never re-run after publication: immutable releases reject asset changes.
+
+5. If a release attempt is abandoned, delete the draft release and document the tag as burned in the next release's notes. Tags are never reused.
+
+See [docs/signing.md](docs/signing.md) for the full signing policy and the consumer verification recipe.
+
 ## Code of Conduct
 
 Please note that all contributors are expected to adhere to the [Code of Conduct](CODE_OF_CONDUCT.md). By participating in this project, you agree to abide by its terms.
