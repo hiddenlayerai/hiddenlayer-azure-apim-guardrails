@@ -1,0 +1,57 @@
+# .github/actions/sign-blobs — the single definition of how the release
+# workflows keyless-sign their artifacts with cosign.
+#
+# Prerequisites (callers must provide these; the action owns no credentials):
+#   1. the calling job must grant `id-token: write` — cosign keyless signing
+#      exchanges the GitHub OIDC token for a short-lived Fulcio certificate.
+#   2. the artifacts to sign must already exist in `working-directory`.
+#
+# This action owns two things that would otherwise be copy-pasted into every
+# release workflow: the pinned cosign-installer version (one bump site) and the
+# sign-blob invocation. cosign v3+ makes the Sigstore bundle the default
+# signing output, so we emit one self-contained `<artifact>.sigstore.json` per
+# file (signature + certificate + Rekor proof) rather than detached .sig/.pem.
+name: Sign blobs with cosign
+description: >-
+  Keyless-signs the given artifacts with cosign, emitting a Sigstore
+  `<artifact>.sigstore.json` (signature, certificate, and Rekor inclusion
+  proof) per file. The calling job must grant `id-token: write`; the action
+  owns no credentials.
+
+inputs:
+  working-directory:
+    description: Directory containing the artifacts; bundles are written here.
+    required: false
+    default: dist
+  patterns:
+    description: >-
+      Space-separated globs of files to sign, relative to working-directory
+      (e.g. "*.pkg checksums-darwin.txt").
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install cosign
+      # Installs cosign v3 — the protobuf Sigstore bundle format; one bump site.
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+    - name: Sign artifacts
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      # PATTERNS is passed via env rather than inlined into the script so the
+      # caller-supplied globs are data, not code (no shell-injection seam).
+      env:
+        PATTERNS: ${{ inputs.patterns }}
+      run: |
+        set -euo pipefail
+        # nullglob stays off, so a glob that matches nothing passes through
+        # literally and fails the -e check — a signing step that silently
+        # signs nothing is a defect.
+        for artifact in $PATTERNS; do
+          if [ ! -e "$artifact" ]; then
+            echo "error: pattern matched no files: $artifact" >&2
+            exit 1
+          fi
+          cosign sign-blob --yes --bundle "${artifact}.sigstore.json" "$artifact"
+        done

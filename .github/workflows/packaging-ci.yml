@@ -1,0 +1,170 @@
+name: Packaging CI
+
+# Signing policy: PRs and merges to main always build UNSIGNED packages.
+# Signed builds happen only in cli-release.yml. This workflow carries zero
+# secrets by design — it is the pre-merge validation of the packaging
+# surface, not a release path.
+#
+# PR gating: the packaging job runs on PRs that touch packaging paths, OR on
+# any PR carrying the "build-packages" label (set the label to dry-run the
+# full pkg build before merging). The path/label decision lives in the
+# `changes` gate job because GitHub triggers cannot express paths-OR-label.
+on:
+  pull_request:
+    branches: [main]
+    # `labeled` so adding the build-packages label re-triggers the workflow.
+    types: [opened, synchronize, reopened, labeled]
+  # Every merge to main produces an unsigned pkg artifact (no paths filter).
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PACKAGING_LABEL: build-packages
+
+jobs:
+  # This gate always reports a status, so it can be a required check without
+  # deadlocking PRs that don't touch packaging paths.
+  changes:
+    name: Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether the packaging job runs
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, env.PACKAGING_LABEL) }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "push" ]; then
+            echo "push to main: packaging job runs"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$HAS_LABEL" = "true" ]; then
+            echo "PR carries the '$PACKAGING_LABEL' label: packaging job runs"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED="$(git diff --name-only "$BASE_SHA" HEAD)"
+          echo "$CHANGED"
+
+          if echo "$CHANGED" | grep -qE '^(cli/packaging/|\.github/actions/|\.github/workflows/(packaging-ci|cli-release|cli-ci)\.ya?ml)'; then
+            echo "packaging paths changed: packaging job runs"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no packaging paths changed and no '$PACKAGING_LABEL' label: skipping"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  macos-package:
+    name: macOS pkg
+    runs-on: macos-26
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+
+      # shellcheck catches dropped guards / quoting bugs; bash -n is a syntax
+      # gate.
+      - name: Lint packaging scripts
+        run: |
+          set -euo pipefail
+          command -v shellcheck >/dev/null || brew install shellcheck
+          shellcheck cli/packaging/macos/build-pkg.sh
+          bash -n cli/packaging/macos/build-pkg.sh
+
+      # The CI version passes build-pkg.sh's semver gate; the leg cannot
+      # package without building both darwin slices first.
+      - name: Build darwin/arm64 binary
+        working-directory: cli
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath \
+            -ldflags "-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=0.1.0-ci.${{ github.run_number }}" \
+            -o "$RUNNER_TEMP/hl-arm64" .
+
+      - name: Build darwin/amd64 binary
+        working-directory: cli
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath \
+            -ldflags "-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=0.1.0-ci.${{ github.run_number }}" \
+            -o "$RUNNER_TEMP/hl-amd64" .
+
+      # No signing identities -> build-pkg.sh produces an unsigned pkg.
+      # Zero secrets in this workflow, that is the design.
+      - name: Build macOS package (unsigned)
+        id: package
+        uses: ./.github/actions/package-macos
+        with:
+          version: v0.1.0-ci.${{ github.run_number }}
+          arm64-binary: ${{ runner.temp }}/hl-arm64
+          amd64-binary: ${{ runner.temp }}/hl-amd64
+          out: dist
+
+      - name: Verify pkg contents
+        uses: ./.github/actions/verify-macos-pkg
+        with:
+          pkg: ${{ steps.package.outputs.pkg }}
+          binary-name: hiddenlayer-apim
+
+      # Real `installer -pkg` run on the ephemeral runner. This step runs as
+      # the non-root runner user; being able to exec the binary proves
+      # /usr/local/bin is world-traversable and the binary is executable.
+      - name: Smoke test install (real installer -pkg)
+        env:
+          PKG: ${{ steps.package.outputs.pkg }}
+          WANT_VERSION: 0.1.0-ci.${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          sudo installer -pkg "$PKG" -target / \
+            || { echo "::error::pkg install failed"; exit 1; }
+          test -x /usr/local/bin/hiddenlayer-apim \
+            || { echo "::error::/usr/local/bin/hiddenlayer-apim not present/executable by a non-root user after install"; exit 1; }
+          GOT_VERSION="$(/usr/local/bin/hiddenlayer-apim version | awk '{print $2}')"
+          if [ "$GOT_VERSION" != "$WANT_VERSION" ]; then
+            echo "::error::installed binary reports version '$GOT_VERSION', want '$WANT_VERSION'"
+            exit 1
+          fi
+          echo "install succeeded; binary executable by non-root; version matches $WANT_VERSION"
+
+      - name: Upload unsigned pkg artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hiddenlayer-apim-macos-pkg-unsigned
+          path: dist/*.pkg
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,77 @@
+# .github/actions/verify-macos-pkg — verifies a built macOS .pkg carries the
+# expected payload. Read-only; owns no credentials. Runs against both the
+# ad-hoc CI pkg and the signed release pkg (before notarization).
+name: Verify macOS pkg
+description: >-
+  Expands the built .pkg and asserts its single component carries what it
+  should: the universal binary, executable, in a 0755 install-location dir,
+  with no BOM entry for the shared /usr/local parent. Catches packaging
+  regressions before publish.
+
+inputs:
+  pkg:
+    description: Path to the .pkg to verify.
+    required: true
+  binary-name:
+    description: Name of the payload binary to assert on.
+    required: false
+    default: hiddenlayer-apim
+
+runs:
+  using: composite
+  steps:
+    - name: Verify pkg contents
+      shell: bash
+      env:
+        PKG: ${{ inputs.pkg }}
+        BINARY_NAME: ${{ inputs.binary-name }}
+      run: |
+        set -euo pipefail
+
+        EXPANDED="$RUNNER_TEMP/pkg-expanded"
+        rm -rf "$EXPANDED"
+
+        [ -f "$PKG" ] || { echo "Expected pkg not found: $PKG"; exit 1; }
+
+        pkgutil --expand-full "$PKG" "$EXPANDED"
+
+        fail() { echo "$1"; find "$EXPANDED" -maxdepth 3 -print; exit 1; }
+
+        # Locate the single component's payload binary and BOM; this works
+        # whether the pkg is a bare component pkg (Payload/ at the expansion
+        # root) or a product archive wrapping one component pkg.
+        PAYLOAD_BIN="$(find "$EXPANDED" -type f -path "*/Payload/$BINARY_NAME" -print -quit)"
+        [ -n "$PAYLOAD_BIN" ] || fail "component payload does not contain $BINARY_NAME"
+        [ -x "$PAYLOAD_BIN" ] || fail "$BINARY_NAME payload is not executable"
+
+        BOM="$(find "$EXPANDED" -type f -name Bom -print -quit)"
+        [ -n "$BOM" ] || fail "expanded pkg does not contain a Bom"
+
+        # The install-location (/usr/local/bin) must be recorded 0755 (40755),
+        # or a first-creator install leaves it 0700 and non-root users can't
+        # traverse it to exec the binary.
+        # This BOM check is the REAL first-creator guard: a runtime `test -x`
+        # smoke check passes regardless of recorded mode on a runner where
+        # /usr/local/bin already exists at 0755 — which it does on GitHub macOS
+        # runners because Homebrew created it there — so that check can't catch
+        # a 0700 regression. Don't drop this one as "redundant" with it.
+        lsbom "$BOM" | grep -qE '^\.[[:space:]]+40755[[:space:]]' \
+          || { echo "install-location dir is not 0755:"; lsbom "$BOM"; exit 1; }
+
+        # The BOM may not record a /usr/local path. The component is rooted
+        # INSIDE its install-location (the BOM root "." is the install-location
+        # itself), so installing never re-stamps the shared /usr/local parent's
+        # mode/owner. A regression to a payload rooted at / (the Homebrew
+        # footgun) would reintroduce a /usr/local entry here.
+        if lsbom "$BOM" | awk '{print $1}' | grep -qE '(^|/)usr/local(/|$)'; then
+          echo "BOM records a /usr/local path; the component must stay rooted inside its install-location:"
+          lsbom "$BOM"
+          exit 1
+        fi
+
+        lipo -archs "$PAYLOAD_BIN"
+        # Exact-token match: a substring grep would let e.g. x86_64h satisfy x86_64.
+        lipo -archs "$PAYLOAD_BIN" | tr ' ' '\n' | grep -qx 'x86_64'
+        lipo -archs "$PAYLOAD_BIN" | tr ' ' '\n' | grep -qx 'arm64'
+
+        echo "pkg payload, modes, and architectures verified"

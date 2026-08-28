@@ -1,123 +1,363 @@
+# Release pipeline: tag push -> validate -> reusable build -> one draft release
+# -> per-platform sign/verify/checksum/upload into the draft -> gated publish
+# flip. A release never degrades to unsigned output: every signing
+# prerequisite hard-fails, and nothing becomes public until `publish` flips
+# the draft. All release mutations are addressed by release ID, never by tag.
 name: CLI Release
 
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v*"
 
 permissions:
   contents: read
 
+concurrency:
+  group: cli-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: cli
-        shell: bash
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: cli/go.mod
-          cache-dependency-path: cli/go.sum
-
       - name: Validate semver tag
-        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Tag '$TAG' is not a valid semver tag (expected vMAJOR.MINOR.PATCH[-PRERELEASE])."
+          set -euo pipefail
+          # Full SemVer prerelease grammar (numeric ids reject leading zeros);
+          # keep in sync with cli/packaging/macos/build-pkg.sh (SEMVER_RE).
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a valid SemVer release tag (vMAJOR.MINOR.PATCH[-PRERELEASE], no leading zeros)."
             exit 1
           fi
 
-      - name: Run tests
-        run: go test ./...
+      - name: Assert tag points at main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Compare by ref NAME, not GITHUB_SHA: for annotated tags GITHUB_SHA
+          # is the tag object, while the compare API peels ref names to commits.
+          STATUS=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${TAG}" --jq .status) || exit 1
+          if [ "$STATUS" != "identical" ] && [ "$STATUS" != "behind" ]; then
+            echo "::error::Tag '$TAG' does not point at a commit on main (compare status: '$STATUS')."
+            exit 1
+          fi
 
-  build_linux:
-    name: Build Linux archives
-    runs-on: ubuntu-latest
-    needs: test
-    defaults:
-      run:
-        working-directory: cli
-        shell: bash
+  build:
+    name: Build
+    needs: validate
+    uses: ./.github/workflows/cli-ci.yml
+    with:
+      version: ${{ github.ref_name }}
+
+  create_draft:
+    name: Create draft release
+    runs-on: ubuntu-24.04
+    needs: build
+    environment: release
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    outputs:
+      release_id: ${{ steps.draft.outputs.release_id }}
+      upload_url: ${{ steps.draft.outputs.upload_url }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: cli/go.mod
-          cache-dependency-path: cli/go.sum
-
-      - name: Build Linux archives
+      - name: Create or adopt the draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          rm -rf dist
-          mkdir -p dist/linux-amd64 dist/linux-arm64
+          # The REST get-release-by-tag endpoint only sees published releases, so list
+          # and filter client-side to find drafts.
+          lookup_release() {
+            local resp matches
+            resp=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --slurp) || return 1
+            # --slurp wraps each page in its own array, so flatten one level with .[][].
+            matches=$(jq --arg tag "$TAG" '[.[][] | select(.tag_name==$tag)]' <<<"$resp") || return 1
+            printf '%s\n' "$matches"
+          }
 
-          VERSION="${GITHUB_REF_NAME}"
-          GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
-          BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          MATCHES=$(lookup_release) || exit 1
+          COUNT=$(jq 'length' <<<"$MATCHES") || exit 1
 
-          LDFLAGS="-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=${VERSION} \
-            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.GitCommit=${GIT_COMMIT} \
-            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.BuildDate=${BUILD_DATE}"
+          case "$COUNT" in
+            0)
+              CREATE_ARGS=(release create "$TAG" --draft --verify-tag --title "$TAG")
+              # validate already enforced the SemVer grammar (a hyphen appears only
+              # to start the prerelease), so this glob is exact within accepted tags.
+              if [[ "$TAG" == *-* ]]; then
+                CREATE_ARGS+=(--prerelease)
+                echo "tag $TAG has a prerelease suffix; marking release as prerelease"
+              fi
+              gh "${CREATE_ARGS[@]}"
 
-          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/linux-amd64/hiddenlayer-apim .
-          tar -C dist/linux-amd64 -czf "dist/hiddenlayer-apim-${VERSION}-linux-amd64.tar.gz" hiddenlayer-apim
+              MATCHES=$(lookup_release) || exit 1
+              COUNT=$(jq 'length' <<<"$MATCHES") || exit 1
+              if [[ "$COUNT" != "1" ]]; then
+                echo "::error::expected exactly 1 release for $TAG after creating it, found $COUNT"
+                exit 1
+              fi
+              IS_DRAFT=$(jq -r '.[0].draft' <<<"$MATCHES") || exit 1
+              if [[ "$IS_DRAFT" != "true" ]]; then
+                echo "::error::release created for $TAG is not a draft"
+                exit 1
+              fi
+              ACTION="created"
+              ;;
+            1)
+              IS_DRAFT=$(jq -r '.[0].draft' <<<"$MATCHES") || exit 1
+              if [[ "$IS_DRAFT" != "true" ]]; then
+                echo "::error::a published release already exists for $TAG — refusing to touch it"
+                exit 1
+              fi
+              ACTION="reused"
+              ;;
+            *)
+              echo "::error::duplicate releases found for $TAG — delete the strays"
+              exit 1
+              ;;
+          esac
 
-          GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/linux-arm64/hiddenlayer-apim .
-          tar -C dist/linux-arm64 -czf "dist/hiddenlayer-apim-${VERSION}-linux-arm64.tar.gz" hiddenlayer-apim
+          ID=$(jq -r '.[0].id // empty' <<<"$MATCHES") || exit 1
+          UPLOAD_URL=$(jq -r '.[0].upload_url // empty' <<<"$MATCHES") || exit 1
 
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-linux
-          path: cli/dist/*.tar.gz
-          if-no-files-found: error
-          retention-days: 7
+          if [[ -z "$ID" || ! "$ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::could not read a numeric release id for $TAG"
+            exit 1
+          fi
+          if [[ -z "$UPLOAD_URL" ]]; then
+            echo "::error::could not read the upload_url for $TAG"
+            exit 1
+          fi
 
-  build_macos:
-    name: Build macOS packages
-    runs-on: macos-latest
-    needs: test
+          echo "$ACTION draft release for $TAG (id=$ID)"
+
+          echo "release_id=$ID" >> "$GITHUB_OUTPUT"
+          echo "upload_url=$UPLOAD_URL" >> "$GITHUB_OUTPUT"
+
+  release_linux:
+    name: Release Linux artifacts
+    runs-on: ubuntu-24.04
+    needs: [build, create_draft]
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    timeout-minutes: 20
     defaults:
       run:
-        working-directory: cli
         shell: bash
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
 
-      - name: Import Apple signing certificates
-        if: env.APPLE_CERTIFICATE_BASE64 != ''
+      - name: Download linux/amd64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: apim-linux-amd64
+          path: dist/bin/linux-amd64
+
+      - name: Download linux/arm64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: apim-linux-arm64
+          path: dist/bin/linux-arm64
+
+      - name: Assert versions and assemble tarballs
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # download-artifact drops file modes; restore before exec/tar.
+          chmod +x dist/bin/linux-amd64/hiddenlayer-apim dist/bin/linux-arm64/hiddenlayer-apim
+          WANT="${TAG#v}"
+          GOT="$(dist/bin/linux-amd64/hiddenlayer-apim version | awk '{print $2}')"
+          if [ "$GOT" != "$WANT" ]; then
+            echo "::error::linux-amd64 version mismatch: got '$GOT', want '$WANT'"
+            exit 1
+          fi
+          # arm64 cannot exec on this runner; assert arch from build info.
+          BIN=dist/bin/linux-arm64/hiddenlayer-apim
+          INFO="$(go version -m "$BIN")"
+          echo "$INFO"
+          grep -q 'GOARCH=arm64' <<<"$INFO" || { echo "::error::linux-arm64 slice is not GOARCH=arm64"; exit 1; }
+          # -ldflags values are invisible to `go version -m`; the native sibling slice exec-asserts the exact field, this is a cross-arch presence probe.
+          grep -aqF "$WANT" "$BIN" || { echo "::error::version stamp ${WANT} not found in linux-arm64 binary"; exit 1; }
+          tar -C dist/bin/linux-amd64 -czf "dist/hiddenlayer-apim-${TAG}-linux-amd64.tar.gz" hiddenlayer-apim
+          tar -C dist/bin/linux-arm64 -czf "dist/hiddenlayer-apim-${TAG}-linux-arm64.tar.gz" hiddenlayer-apim
+
+      - name: Generate checksums
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum \
+            "hiddenlayer-apim-${TAG}-linux-amd64.tar.gz" \
+            "hiddenlayer-apim-${TAG}-linux-arm64.tar.gz" \
+            | tee linux-checksums.txt
+
+      - name: Sign artifacts
+        uses: ./.github/actions/sign-blobs
+        with:
+          working-directory: dist
+          patterns: hiddenlayer-apim-*-linux-*.tar.gz linux-checksums.txt
+
+      - name: Upload assets to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.create_draft.outputs.release_id }}
+          UPLOAD_URL: ${{ needs.create_draft.outputs.upload_url }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Per-job asset list — the only block that differs between platform jobs.
+          FILES=(
+            "hiddenlayer-apim-$TAG-linux-amd64.tar.gz"
+            "hiddenlayer-apim-$TAG-linux-arm64.tar.gz"
+            "linux-checksums.txt"
+            "hiddenlayer-apim-$TAG-linux-amd64.tar.gz.sigstore.json"
+            "hiddenlayer-apim-$TAG-linux-arm64.tar.gz.sigstore.json"
+            "linux-checksums.txt.sigstore.json"
+          )
+
+          DRAFT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID" --jq .draft) || exit 1
+          if [[ "$DRAFT" != "true" ]]; then
+            echo "::error::Release $RELEASE_ID is no longer a draft; refusing to upload assets."
+            exit 1
+          fi
+
+          # upload_url is an RFC 6570 template ending in {?name,label}; drop the template suffix.
+          UPLOAD_URL="${UPLOAD_URL%%\{*}"
+
+          cd dist
+
+          for f in "${FILES[@]}"; do
+            if [[ ! -e "$f" ]]; then
+              echo "::error::Expected asset dist/$f not found."
+              exit 1
+            fi
+
+            # Re-runs of this job must be idempotent: the upload API rejects a duplicate
+            # asset name, so remove any leftover from a previous attempt first.
+            STALE_IDS=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID/assets" --paginate \
+              | jq -r --arg f "$f" '.[] | select(.name==$f) | .id') || exit 1
+            while IFS= read -r id; do
+              [[ -n "$id" ]] || continue
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/$id"
+              echo "deleted stale asset id $id ($f)"
+            done <<<"$STALE_IDS"
+
+            ENC=$(jq -rn --arg n "$f" '$n|@uri')
+
+            echo "uploading $f"
+            curl --fail-with-body --retry 3 \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              "$UPLOAD_URL?name=$ENC" \
+              --data-binary @"$f"
+            echo
+          done
+
+          echo "uploaded ${#FILES[@]} assets to draft release $RELEASE_ID ($TAG)"
+
+  release_macos:
+    name: Release macOS artifacts
+    runs-on: macos-26
+    needs: [build, create_draft]
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Releases must ship signed, notarized packages; fail fast instead of
+      # silently producing ad-hoc-signed/unnotarized artifacts.
+      - name: Fail when macOS signing is not configured
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          # Set APPLE_CERTIFICATE_PASSWORD secret if the .p12 has a password; defaults to empty string if unset.
+          APPLE_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_BASE64 }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          MISSING=""
+          [ -n "$APPLE_CERTIFICATE_BASE64" ] || MISSING="$MISSING APPLE_CERTIFICATE_BASE64"
+          [ -n "$APPLE_INSTALLER_CERTIFICATE_BASE64" ] || MISSING="$MISSING APPLE_INSTALLER_CERTIFICATE_BASE64"
+          [ -n "$APPLE_API_KEY_BASE64" ] || MISSING="$MISSING APPLE_API_KEY_BASE64"
+          [ -n "$APPLE_API_KEY_ID" ] || MISSING="$MISSING APPLE_API_KEY_ID"
+          [ -n "$APPLE_API_ISSUER_ID" ] || MISSING="$MISSING APPLE_API_ISSUER_ID"
+          if [ -n "$MISSING" ]; then
+            echo "::error::macOS signing/notarization is not configured; releases must ship signed, notarized packages. Missing secrets:$MISSING"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Download darwin/arm64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: apim-darwin-arm64
+          path: dist/bin/darwin-arm64
+
+      - name: Download darwin/amd64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: apim-darwin-amd64
+          path: dist/bin/darwin-amd64
+
+      - name: Import Apple signing certificates
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_BASE64 }}
           APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
         run: |
+          set -euo pipefail
+
           KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
           KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the vendored Apple Developer ID G2 intermediate CA so the leaf certs chain to a trusted root
+          security import cli/packaging/macos/DeveloperIDG2CA.cer -t cert -k "$KEYCHAIN_PATH"
 
           # Import Application certificate
           CERT_PATH=$RUNNER_TEMP/certificate.p12
@@ -129,24 +369,24 @@ jobs:
 
           security import "$CERT_PATH" \
             -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 \
+            -T /usr/bin/codesign -T /usr/bin/productsign -t cert -f pkcs12 \
             -k "$KEYCHAIN_PATH"
 
-          # Import Installer certificate (if provided)
-          if [ -n "$APPLE_INSTALLER_CERTIFICATE_BASE64" ]; then
-            INSTALLER_CERT_PATH=$RUNNER_TEMP/installer-certificate.p12
-            echo "$APPLE_INSTALLER_CERTIFICATE_BASE64" | base64 --decode > "$INSTALLER_CERT_PATH"
+          # Import Installer certificate
+          INSTALLER_CERT_PATH=$RUNNER_TEMP/installer-certificate.p12
+          echo "$APPLE_INSTALLER_CERTIFICATE_BASE64" | base64 --decode > "$INSTALLER_CERT_PATH"
 
-            if [ -z "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" ]; then
-              echo "No APPLE_INSTALLER_CERTIFICATE_PASSWORD secret set; importing installer certificate with empty password."
-            fi
-
-            security import "$INSTALLER_CERT_PATH" \
-              -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
-              -A -t cert -f pkcs12 \
-              -k "$KEYCHAIN_PATH" || echo "::warning::Installer certificate import returned non-zero (may be due to duplicate intermediate CAs); checking identity..."
+          if [ -z "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" ]; then
+            echo "No APPLE_INSTALLER_CERTIFICATE_PASSWORD secret set; importing installer certificate with empty password."
           fi
 
+          security import "$INSTALLER_CERT_PATH" \
+            -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productsign -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH" || echo "::warning::Installer certificate import returned non-zero (may be due to duplicate intermediate CAs); checking identity..."
+
+          # The unquoted expansion is intentional: it word-splits the existing keychain paths
+          # shellcheck disable=SC2046
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -159,7 +399,8 @@ jobs:
             echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
             echo "Found signing identity: $IDENTITY"
           else
-            echo "::warning::No Developer ID Application identity found in certificate"
+            echo "::error::No Developer ID Application identity found in certificate"
+            exit 1
           fi
 
           INSTALLER_IDENTITY=$(security find-identity -v "$KEYCHAIN_PATH" \
@@ -170,164 +411,258 @@ jobs:
             echo "APPLE_INSTALLER_IDENTITY=$INSTALLER_IDENTITY" >> "$GITHUB_ENV"
             echo "Found installer identity: $INSTALLER_IDENTITY"
           else
-            echo "::warning::No Developer ID Installer identity found in certificate"
+            echo "::error::No Developer ID Installer identity found in certificate"
+            exit 1
           fi
 
-      - name: Set up Apple notarization credentials
-        if: env.APPLE_API_KEY_BASE64 != ''
+      - name: Install notarization key
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
         run: |
-          mkdir -p ~/private_keys
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/private_keys"
           echo "$APPLE_API_KEY_BASE64" | base64 --decode \
-            > ~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
-          echo "Notarization API key installed for key ID: $APPLE_API_KEY_ID"
+            > "$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8"
 
-      - name: Build macOS packages
+      - name: Assert binary versions
         env:
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_INSTALLER_IDENTITY: ${{ env.APPLE_INSTALLER_IDENTITY }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # download-artifact drops file modes; restore before exec.
+          chmod +x dist/bin/darwin-arm64/hiddenlayer-apim dist/bin/darwin-amd64/hiddenlayer-apim
+          WANT="${TAG#v}"
+          GOT="$(dist/bin/darwin-arm64/hiddenlayer-apim version | awk '{print $2}')"
+          if [ "$GOT" != "$WANT" ]; then
+            echo "::error::darwin-arm64 version mismatch: got '$GOT', want '$WANT'"
+            exit 1
+          fi
+          # amd64 cannot exec natively on this runner; assert arch from build info.
+          BIN=dist/bin/darwin-amd64/hiddenlayer-apim
+          INFO="$(go version -m "$BIN")"
+          echo "$INFO"
+          grep -q 'GOARCH=amd64' <<<"$INFO" || { echo "::error::darwin-amd64 slice is not GOARCH=amd64"; exit 1; }
+          # -ldflags values are invisible to `go version -m`; the native sibling slice exec-asserts the exact field, this is a cross-arch presence probe.
+          grep -aqF "$WANT" "$BIN" || { echo "::error::version stamp ${WANT} not found in darwin-amd64 binary"; exit 1; }
 
-          rm -rf dist
-          mkdir -p dist/darwin-amd64 dist/darwin-arm64
+      - name: Package universal pkg
+        id: package
+        uses: ./.github/actions/package-macos
+        with:
+          version: ${{ github.ref_name }}
+          arm64-binary: dist/bin/darwin-arm64/hiddenlayer-apim
+          amd64-binary: dist/bin/darwin-amd64/hiddenlayer-apim
+          out: dist
+          signing-identity: ${{ env.APPLE_SIGNING_IDENTITY }}
+          installer-identity: ${{ env.APPLE_INSTALLER_IDENTITY }}
 
-          VERSION="${GITHUB_REF_NAME}"
-          GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
-          BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+      - name: Verify pkg payload
+        uses: ./.github/actions/verify-macos-pkg
+        with:
+          pkg: ${{ steps.package.outputs.pkg }}
 
-          LDFLAGS="-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=${VERSION} \
-            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.GitCommit=${GIT_COMMIT} \
-            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.BuildDate=${BUILD_DATE}"
-
-          GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/darwin-amd64/hiddenlayer-apim .
-          GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/darwin-arm64/hiddenlayer-apim .
-
-          for arch in amd64 arm64; do
-            ./scripts/sign-darwin.sh "dist/darwin-${arch}/hiddenlayer-apim"
-
-            pkgbuild \
-              --root "dist/darwin-${arch}" \
-              --identifier "ai.hiddenlayer.apim-cli" \
-              --version "${VERSION#v}" \
-              --install-location /usr/local/bin \
-              "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg"
-
-            if [ -n "${APPLE_INSTALLER_IDENTITY:-}" ]; then
-              productsign \
-                --sign "$APPLE_INSTALLER_IDENTITY" \
-                --timestamp \
-                "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg" \
-                "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}.pkg"
-              rm "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg"
-            else
-              echo "::warning::No installer signing identity; .pkg will be unsigned."
-              mv "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}-unsigned.pkg" \
-                 "dist/hiddenlayer-apim-${VERSION}-darwin-${arch}.pkg"
-            fi
-          done
-
-      - name: Notarize and staple macOS packages
-        if: env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_API_KEY_ID != ''
+      - name: Notarize and staple
+        timeout-minutes: 70
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          PKG: ${{ steps.package.outputs.pkg }}
         run: |
-          KEY_PATH=~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
-          SUBMISSION_IDS=()
+          set -euo pipefail
 
-          for archive in dist/hiddenlayer-apim-*-darwin-*.pkg; do
-            [ -f "$archive" ] || continue
-            echo "Submitting $archive..."
-            OUTPUT=$(xcrun notarytool submit "$archive" \
+          KEY_PATH="$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8"
+
+          # Submit without --wait so the submission id is captured and recorded before
+          # anything that can time out or fail.
+          SUBMIT_JSON=$(xcrun notarytool submit "$PKG" \
+            --key "$KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --output-format json)
+
+          SUBMISSION_ID=$(jq -r '.id // empty' <<<"$SUBMIT_JSON")
+          if [ -z "$SUBMISSION_ID" ]; then
+            echo "::error::notarytool submit returned no submission id"
+            echo "$SUBMIT_JSON"
+            exit 1
+          fi
+
+          # Record the id up front: if the wait below times out or the job is cancelled,
+          # the id is still in the summary for a manual `notarytool wait` / `log`.
+          echo "notary submission id: $SUBMISSION_ID"
+          echo "notary submission id: $SUBMISSION_ID" >>"$GITHUB_STEP_SUMMARY"
+
+          # `notarytool wait` exits nonzero on a non-Accepted result; keep the JSON and
+          # let the parsed status be the gate.
+          WAIT_JSON=$(xcrun notarytool wait "$SUBMISSION_ID" \
+            --key "$KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --timeout 3600 \
+            --output-format json) || true
+
+          echo "$WAIT_JSON"
+          # Guard the parse: malformed/empty wait output must reach the diagnostics
+          # below instead of killing the step at the jq under set -e.
+          STATUS=$(jq -r '.status // empty' <<<"$WAIT_JSON" 2>/dev/null || true)
+
+          if [ -z "$STATUS" ]; then
+            echo "notarytool wait produced no parseable status; raw output:"
+            echo "$WAIT_JSON"
+            xcrun notarytool log "$SUBMISSION_ID" \
               --key "$KEY_PATH" \
               --key-id "$APPLE_API_KEY_ID" \
-              --issuer "$APPLE_API_ISSUER_ID" 2>&1)
-            echo "$OUTPUT"
-            ID=$(echo "$OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
-            if [ -n "$ID" ]; then
-              SUBMISSION_IDS+=("$ID:$archive")
-              echo "Submitted $archive -> $ID"
-            else
-              echo "::warning::Failed to submit $archive"
-            fi
-          done
-
-          if [ ${#SUBMISSION_IDS[@]} -eq 0 ]; then
-            echo "No submissions to track."
-            exit 0
+              --issuer "$APPLE_API_ISSUER_ID" || true
+            echo "::error::notarization wait returned no status (submission $SUBMISSION_ID)"
+            exit 1
           fi
 
-          DEADLINE=$((SECONDS + 900))
-          PENDING=("${SUBMISSION_IDS[@]}")
-
-          while [ ${#PENDING[@]} -gt 0 ] && [ $SECONDS -lt $DEADLINE ]; do
-            sleep 30
-            STILL_PENDING=()
-            for entry in "${PENDING[@]}"; do
-              ID="${entry%%:*}"
-              ARCHIVE="${entry#*:}"
-              STATUS=$(xcrun notarytool info "$ID" \
-                --key "$KEY_PATH" \
-                --key-id "$APPLE_API_KEY_ID" \
-                --issuer "$APPLE_API_ISSUER_ID" 2>&1 | grep "status:" | head -1 | awk '{print $2}')
-              case "$STATUS" in
-                Accepted)
-                  echo "$ARCHIVE notarized ($ID)"
-                  xcrun stapler staple "$ARCHIVE"
-                  echo "$ARCHIVE stapled successfully"
-                  ;;
-                Invalid|Rejected)
-                  echo "::warning::$ARCHIVE notarization rejected ($ID)"
-                  xcrun notarytool log "$ID" \
-                    --key "$KEY_PATH" \
-                    --key-id "$APPLE_API_KEY_ID" \
-                    --issuer "$APPLE_API_ISSUER_ID" 2>&1 || true
-                  ;;
-                *)
-                  STILL_PENDING+=("$entry")
-                  echo "$ARCHIVE still processing ($STATUS)..."
-                  ;;
-              esac
-            done
-            PENDING=("${STILL_PENDING[@]}")
-          done
-
-          if [ ${#PENDING[@]} -gt 0 ]; then
-            echo "::warning::Notarization still pending for ${#PENDING[@]} archive(s) after timeout."
-            for entry in "${PENDING[@]}"; do
-              echo "Pending: ${entry#*:} (${entry%%:*})"
-            done
+          if [ "$STATUS" = "Accepted" ]; then
+            xcrun stapler staple "$PKG"
+          else
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --key "$KEY_PATH" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" || true
+            echo "::error::notarization failed with status '$STATUS' (submission $SUBMISSION_ID)"
+            exit 1
           fi
 
-      - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+      - name: Verify notarized pkg
+        env:
+          PKG: ${{ steps.package.outputs.pkg }}
+        run: |
+          set -euo pipefail
+          xcrun stapler validate "$PKG"
+          pkgutil --check-signature "$PKG"
+          # Advisory only: spctl on CI runners can lag Apple's CDN/policy state.
+          spctl -a -vvv -t install "$PKG" || echo "::warning::spctl assessment failed (advisory only; stapler/pkgutil checks above are the gate)"
+
+      - name: Assemble sideload tarball
+        env:
+          TAG: ${{ github.ref_name }}
+          PKG: ${{ steps.package.outputs.pkg }}
+        run: |
+          set -euo pipefail
+          # Ship the exact signed universal binary the pkg carries — the
+          # notarization ticket covers its cdhash, so no extra signing.
+          EXPANDED="$RUNNER_TEMP/sideload-expanded"
+          rm -rf "$EXPANDED"
+          pkgutil --expand-full "$PKG" "$EXPANDED"
+          BIN="$(find "$EXPANDED" -type f -path '*/Payload/hiddenlayer-apim' -print -quit)"
+          if [ -z "$BIN" ]; then
+            echo "::error::signed binary not found in expanded pkg"
+            exit 1
+          fi
+          STAGE="$RUNNER_TEMP/sideload-stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          # Same xattr/AppleDouble hygiene as build-pkg.sh: strip xattrs on copy and
+          # keep tar from emitting ._hiddenlayer-apim entries for non-macOS extractors.
+          cp -X "$BIN" "$STAGE/hiddenlayer-apim"
+          chmod 0755 "$STAGE/hiddenlayer-apim"
+          codesign --verify --strict "$STAGE/hiddenlayer-apim"
+          COPYFILE_DISABLE=1 tar -czf "dist/hiddenlayer-apim-${TAG}-darwin-universal.tar.gz" -C "$STAGE" hiddenlayer-apim
+
+      - name: Generate checksums
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 \
+            "hiddenlayer-apim-${TAG}-darwin-universal.pkg" \
+            "hiddenlayer-apim-${TAG}-darwin-universal.tar.gz" \
+            | tee darwin-checksums.txt
+
+      - name: Sign artifacts
+        uses: ./.github/actions/sign-blobs
         with:
-          name: cli-macos
-          path: cli/dist/*.pkg
-          if-no-files-found: error
-          retention-days: 7
+          working-directory: dist
+          patterns: hiddenlayer-apim-*-darwin-universal.pkg hiddenlayer-apim-*-darwin-universal.tar.gz darwin-checksums.txt
 
-      - name: Clean up keychain
+      - name: Upload assets to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.create_draft.outputs.release_id }}
+          UPLOAD_URL: ${{ needs.create_draft.outputs.upload_url }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Per-job asset list — the only block that differs between platform jobs.
+          FILES=(
+            "hiddenlayer-apim-$TAG-darwin-universal.pkg"
+            "hiddenlayer-apim-$TAG-darwin-universal.tar.gz"
+            "darwin-checksums.txt"
+            "hiddenlayer-apim-$TAG-darwin-universal.pkg.sigstore.json"
+            "hiddenlayer-apim-$TAG-darwin-universal.tar.gz.sigstore.json"
+            "darwin-checksums.txt.sigstore.json"
+          )
+
+          DRAFT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID" --jq .draft) || exit 1
+          if [[ "$DRAFT" != "true" ]]; then
+            echo "::error::Release $RELEASE_ID is no longer a draft; refusing to upload assets."
+            exit 1
+          fi
+
+          # upload_url is an RFC 6570 template ending in {?name,label}; drop the template suffix.
+          UPLOAD_URL="${UPLOAD_URL%%\{*}"
+
+          cd dist
+
+          for f in "${FILES[@]}"; do
+            if [[ ! -e "$f" ]]; then
+              echo "::error::Expected asset dist/$f not found."
+              exit 1
+            fi
+
+            # Re-runs of this job must be idempotent: the upload API rejects a duplicate
+            # asset name, so remove any leftover from a previous attempt first.
+            STALE_IDS=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID/assets" --paginate \
+              | jq -r --arg f "$f" '.[] | select(.name==$f) | .id') || exit 1
+            while IFS= read -r id; do
+              [[ -n "$id" ]] || continue
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/$id"
+              echo "deleted stale asset id $id ($f)"
+            done <<<"$STALE_IDS"
+
+            ENC=$(jq -rn --arg n "$f" '$n|@uri')
+
+            echo "uploading $f"
+            curl --fail-with-body --retry 3 \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              "$UPLOAD_URL?name=$ENC" \
+              --data-binary @"$f"
+            echo
+          done
+
+          echo "uploaded ${#FILES[@]} assets to draft release $RELEASE_ID ($TAG)"
+
+      - name: Clean up keychain and keys
         if: always()
         run: |
+          set -euo pipefail
           KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
           if [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
           fi
           rm -f "$RUNNER_TEMP/certificate.p12"
-          rm -rf ~/private_keys
+          rm -f "$RUNNER_TEMP/installer-certificate.p12"
+          rm -rf "$RUNNER_TEMP/private_keys"
 
-  build_windows:
-    name: Build Windows archive
-    runs-on: windows-latest
-    needs: test
+  release_windows:
+    name: Release Windows artifacts
+    runs-on: windows-2025
+    needs: [build, create_draft]
     environment: release
     permissions:
-      contents: read
+      contents: write
       id-token: write
+    timeout-minutes: 20
     env:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -337,58 +672,67 @@ jobs:
       AZURE_CODESIGN_PROFILE_NAME: ${{ vars.AZURE_CODESIGN_PROFILE_NAME }}
     defaults:
       run:
-        working-directory: cli
         shell: pwsh
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: cli/go.mod
-          cache-dependency-path: cli/go.sum
-
-      - name: Build Windows binary
+      # Releases must ship signed Windows artifacts; fail fast instead of
+      # silently producing unsigned ones.
+      - name: Fail when Windows signing is not configured
+        if: env.AZURE_CLIENT_ID == '' || env.AZURE_TENANT_ID == '' || env.AZURE_SUBSCRIPTION_ID == '' || env.AZURE_CODESIGN_ENDPOINT == '' || env.AZURE_CODESIGN_ACCOUNT_NAME == '' || env.AZURE_CODESIGN_PROFILE_NAME == ''
         run: |
-          Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path dist\windows-amd64 | Out-Null
+          $missing = @()
+          if (-not $env:AZURE_CLIENT_ID) { $missing += "AZURE_CLIENT_ID" }
+          if (-not $env:AZURE_TENANT_ID) { $missing += "AZURE_TENANT_ID" }
+          if (-not $env:AZURE_SUBSCRIPTION_ID) { $missing += "AZURE_SUBSCRIPTION_ID" }
+          if (-not $env:AZURE_CODESIGN_ENDPOINT) { $missing += "AZURE_CODESIGN_ENDPOINT" }
+          if (-not $env:AZURE_CODESIGN_ACCOUNT_NAME) { $missing += "AZURE_CODESIGN_ACCOUNT_NAME" }
+          if (-not $env:AZURE_CODESIGN_PROFILE_NAME) { $missing += "AZURE_CODESIGN_PROFILE_NAME" }
+          Write-Error "Azure Artifact Signing is not configured; releases must ship signed Windows artifacts. Missing: $($missing -join ', ')"
+          exit 1
 
-          $version = "${{ github.ref_name }}"
-          try {
-            $gitCommit = (git rev-parse --short HEAD).Trim()
-          } catch {
-            $gitCommit = "unknown"
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download windows/amd64 binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: apim-windows-amd64
+          path: dist/windows-amd64
+
+      - name: Assert binary version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $expected = $env:TAG -replace '^v', ''
+          $out = (& .\dist\windows-amd64\hiddenlayer-apim.exe version | Out-String).Trim()
+          Write-Host "version output: $out"
+          $got = ($out -split ' ')[1]
+          if ($got -ne $expected) {
+            throw "windows-amd64 version mismatch: got '$got', want '$expected'"
           }
-          $buildDate = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-          $ldflags = "-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=$version -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.GitCommit=$gitCommit -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.BuildDate=$buildDate"
-
-          $env:GOOS = "windows"
-          $env:GOARCH = "amd64"
-          go build -ldflags $ldflags -o dist\windows-amd64\hiddenlayer-apim.exe .
-          Remove-Item Env:GOOS -ErrorAction SilentlyContinue
-          Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
 
       - name: Azure login
-        if: env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CODESIGN_ENDPOINT != '' && env.AZURE_CODESIGN_ACCOUNT_NAME != '' && env.AZURE_CODESIGN_PROFILE_NAME != ''
-        uses: azure/login@v2
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sign Windows binary with Azure Artifact Signing
-        if: env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CODESIGN_ENDPOINT != '' && env.AZURE_CODESIGN_ACCOUNT_NAME != '' && env.AZURE_CODESIGN_PROFILE_NAME != ''
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ vars.AZURE_CODESIGN_ENDPOINT }}
           signing-account-name: ${{ vars.AZURE_CODESIGN_ACCOUNT_NAME }}
           certificate-profile-name: ${{ vars.AZURE_CODESIGN_PROFILE_NAME }}
-          files-folder: ${{ github.workspace }}\cli\dist\windows-amd64
+          files-folder: ${{ github.workspace }}\dist\windows-amd64
           files-folder-filter: exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+          description: HiddenLayer APIM CLI ${{ github.ref_name }}
+          description-url: https://github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails
           exclude-environment-credential: true
           exclude-workload-identity-credential: true
           exclude-managed-identity-credential: true
@@ -400,142 +744,455 @@ jobs:
           exclude-azure-developer-cli-credential: true
           exclude-interactive-browser-credential: true
 
-      - name: Package Windows archive
+      - name: Verify Authenticode signature
         run: |
-          $version = "${{ github.ref_name }}"
-          $archive = "dist\hiddenlayer-apim-$version-windows-amd64.zip"
-          $packageDir = "dist\windows-package"
+          $ErrorActionPreference = "Stop"
 
-          if (Test-Path $archive) {
-            Remove-Item $archive -Force
+          $exe = "dist\windows-amd64\hiddenlayer-apim.exe"
+          $sig = Get-AuthenticodeSignature -FilePath $exe
+
+          $acsEkuArc = "1.3.6.1.4.1.311.97."
+          $acsRootSubject = "Microsoft Identity Verification Root Certificate Authority 2020"
+
+          $chain = $null
+          $chainCerts = @()
+          $chainBuilt = $false
+          if ($sig.SignerCertificate) {
+              $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+              # The gate here is chain identity, not revocation status: an unreachable CRL/OCSP
+              # endpoint on the runner must not turn a correctly signed binary into a failure.
+              $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+              $chainBuilt = $chain.Build($sig.SignerCertificate)
+              $chainCerts = @($chain.ChainElements | ForEach-Object { $_.Certificate })
           }
-          Remove-Item -Recurse -Force $packageDir -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
-          Copy-Item -Force dist\windows-amd64\hiddenlayer-apim.exe "$packageDir\hiddenlayer-apim.exe"
-          Push-Location $packageDir
-          Compress-Archive -Force -Path hiddenlayer-apim.exe -DestinationPath "..\hiddenlayer-apim-$version-windows-amd64.zip"
-          Pop-Location
 
-      - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-windows
-          path: cli/dist/*.zip
-          if-no-files-found: error
-          retention-days: 7
+          function Get-CertEkuOids {
+              param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
+              $oids = @()
+              foreach ($ext in $Cert.Extensions) {
+                  if ($ext -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]) {
+                      $oids += @($ext.EnhancedKeyUsages | ForEach-Object { $_.Value })
+                  }
+              }
+              return $oids
+          }
 
-  build_bicep:
-    name: Build Bicep bundle
-    runs-on: ubuntu-latest
-    needs: test
-    defaults:
-      run:
-        working-directory: cli
-        shell: bash
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+          # ACS signs from a rotating CA pool, so leaf and intermediate CNs are not stable
+          # identifiers. The durable signals are the Microsoft Artifact Signing EKU arc and
+          # the pool's shared root.
+          $hasAcsEku = $false
+          foreach ($cert in $chainCerts) {
+              foreach ($oid in (Get-CertEkuOids -Cert $cert)) {
+                  if ($oid -and $oid.StartsWith($acsEkuArc)) { $hasAcsEku = $true }
+              }
+          }
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: cli/go.mod
-          cache-dependency-path: cli/go.sum
+          $rootSubject = ""
+          if ($chainCerts.Count -gt 0) { $rootSubject = $chainCerts[$chainCerts.Count - 1].Subject }
+          $hasAcsRoot = $rootSubject -like "*$acsRootSubject*"
 
-      - name: Build CLI for Bicep export
+          $failures = @()
+          if ($sig.Status -ne 'Valid') { $failures += "signature status is '$($sig.Status)' (expected 'Valid'): $($sig.StatusMessage)" }
+          if (-not $sig.TimeStamperCertificate) { $failures += "no RFC3161 timestamp: TimeStamperCertificate is null" }
+          if (-not ($hasAcsEku -or $hasAcsRoot)) {
+              $failures += "chain does not prove Azure Artifact Signing issuance: no certificate carries an EKU under $acsEkuArc, and the chain root subject '$rootSubject' does not match '$acsRootSubject'"
+          }
+
+          if ($failures.Count -gt 0) {
+              Write-Host "=== Authenticode signature ==="
+              $sig | Format-List * | Out-String -Width 4096 | Write-Host
+              Write-Host "=== Certificate chain (leaf -> root) ==="
+              if ($chainCerts.Count -eq 0) {
+                  Write-Host "  <no chain: signer certificate is missing>"
+              } else {
+                  Write-Host "  X509Chain.Build() returned: $chainBuilt"
+                  foreach ($status in $chain.ChainStatus) {
+                      Write-Host "  ChainStatus: $($status.Status) - $($status.StatusInformation)"
+                  }
+                  foreach ($cert in $chainCerts) {
+                      Write-Host "  Subject: $($cert.Subject)"
+                      Write-Host "    Issuer: $($cert.Issuer)"
+                      Write-Host "    Thumbprint: $($cert.Thumbprint)"
+                      $ekus = Get-CertEkuOids -Cert $cert
+                      if ($ekus.Count -gt 0) {
+                          Write-Host "    EKUs: $($ekus -join ', ')"
+                      } else {
+                          Write-Host "    EKUs: <none>"
+                      }
+                  }
+              }
+              throw "Authenticode verification failed for ${exe}: $($failures -join ' | ')"
+          }
+
+          Write-Host "Authenticode signature verified for $exe"
+          Write-Host "  Signer:      $($sig.SignerCertificate.Subject)"
+          Write-Host "  Timestamper: $($sig.TimeStamperCertificate.Subject)"
+          if ($hasAcsEku) { Write-Host "  ACS proof:   EKU under $acsEkuArc" }
+          else { Write-Host "  ACS proof:   chain root '$rootSubject'" }
+
+      - name: Package Windows archive
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
-
-          rm -rf dist export
-          mkdir -p dist
-
-          VERSION="${GITHUB_REF_NAME}"
-          GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
-          BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-          LDFLAGS="-X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.Version=${VERSION} \
-            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.GitCommit=${GIT_COMMIT} \
-            -X github.com/hiddenlayerai/hiddenlayer-azure-apim-guardrails/cli/cmd.BuildDate=${BUILD_DATE}"
-
-          go build -ldflags "$LDFLAGS" -o dist/hiddenlayer-apim .
-
-      - name: Export Bicep bundles
-        run: |
-          set -euo pipefail
-
-          VERSION="${GITHUB_REF_NAME}"
-          BUNDLE_ROOT="dist/hiddenlayer-apim-${VERSION}-bicep"
-
-          rm -rf "$BUNDLE_ROOT"
-          mkdir -p "$BUNDLE_ROOT"
-
-          for package in v1-interactions v2-request-evals v2-response-evals; do
-            ./dist/hiddenlayer-apim export bicep \
-              --package "$package" \
-              --out "$BUNDLE_ROOT/$package"
-          done
-
-          (cd dist && zip -r "hiddenlayer-apim-${VERSION}-bicep.zip" "hiddenlayer-apim-${VERSION}-bicep")
-
-      - name: Upload Bicep artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-bicep
-          path: cli/dist/*-bicep.zip
-          if-no-files-found: error
-          retention-days: 7
-
-  publish:
-    name: Publish GitHub Release
-    runs-on: ubuntu-latest
-    needs:
-      - build_linux
-      - build_macos
-      - build_windows
-      - build_bicep
-    permissions:
-      contents: write
-      id-token: write
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
+          $ErrorActionPreference = "Stop"
+          $archive = "dist\hiddenlayer-apim-$env:TAG-windows-amd64.zip"
+          Compress-Archive -Force -Path dist\windows-amd64\hiddenlayer-apim.exe -DestinationPath $archive
+          if (-not (Test-Path $archive)) {
+            throw "archive was not created: $archive"
+          }
 
       - name: Generate checksums
         shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           cd dist
-          sha256sum *.tar.gz *.pkg *.zip > checksums.txt
+          sha256sum "hiddenlayer-apim-${TAG}-windows-amd64.zip" | tee windows-checksums.txt
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+      - name: Sign artifacts
+        uses: ./.github/actions/sign-blobs
+        with:
+          working-directory: dist
+          patterns: hiddenlayer-apim-*-windows-amd64.zip windows-checksums.txt
 
-      - name: Sign release artifacts
+      - name: Upload assets to the draft release
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.create_draft.outputs.release_id }}
+          UPLOAD_URL: ${{ needs.create_draft.outputs.upload_url }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+
+          # Per-job asset list — the only block that differs between platform jobs.
+          FILES=(
+            "hiddenlayer-apim-$TAG-windows-amd64.zip"
+            "windows-checksums.txt"
+            "hiddenlayer-apim-$TAG-windows-amd64.zip.sigstore.json"
+            "windows-checksums.txt.sigstore.json"
+          )
+
+          DRAFT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID" --jq .draft) || exit 1
+          if [[ "$DRAFT" != "true" ]]; then
+            echo "::error::Release $RELEASE_ID is no longer a draft; refusing to upload assets."
+            exit 1
+          fi
+
+          # upload_url is an RFC 6570 template ending in {?name,label}; drop the template suffix.
+          UPLOAD_URL="${UPLOAD_URL%%\{*}"
+
           cd dist
 
-          for artifact in *.tar.gz *.pkg *.zip checksums.txt; do
-            cosign sign-blob --yes \
-              --output-signature "${artifact}.sig" \
-              --output-certificate "${artifact}.pem" \
-              "$artifact"
+          for f in "${FILES[@]}"; do
+            if [[ ! -e "$f" ]]; then
+              echo "::error::Expected asset dist/$f not found."
+              exit 1
+            fi
+
+            # Re-runs of this job must be idempotent: the upload API rejects a duplicate
+            # asset name, so remove any leftover from a previous attempt first.
+            STALE_IDS=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID/assets" --paginate \
+              | jq -r --arg f "$f" '.[] | select(.name==$f) | .id') || exit 1
+            while IFS= read -r id; do
+              [[ -n "$id" ]] || continue
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/$id"
+              echo "deleted stale asset id $id ($f)"
+            done <<<"$STALE_IDS"
+
+            ENC=$(jq -rn --arg n "$f" '$n|@uri')
+
+            echo "uploading $f"
+            curl --fail-with-body --retry 3 \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              "$UPLOAD_URL?name=$ENC" \
+              --data-binary @"$f"
+            echo
           done
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+          echo "uploaded ${#FILES[@]} assets to draft release $RELEASE_ID ($TAG)"
+
+  release_bicep:
+    name: Release Bicep bundle
+    runs-on: ubuntu-24.04
+    needs: [build, create_draft]
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            dist/*.tar.gz
-            dist/*.pkg
-            dist/*.zip
-            dist/checksums.txt
-            dist/*.sig
-            dist/*.pem
+          persist-credentials: false
+
+      - name: Download Bicep export
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: apim-bicep
+          path: dist/bicep
+
+      - name: Assemble Bicep archive
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for pkg in v1-interactions v2-request-evals v2-response-evals; do
+            if [ ! -d "dist/bicep/$pkg" ]; then
+              echo "::error::bicep export is missing package dir: $pkg"
+              exit 1
+            fi
+          done
+          # Package dirs live at the archive root (documented layout).
+          (cd dist/bicep && zip -r "../hiddenlayer-apim-${TAG}-bicep.zip" v1-interactions v2-request-evals v2-response-evals)
+          LISTING="$(unzip -l "dist/hiddenlayer-apim-${TAG}-bicep.zip")"
+          echo "$LISTING"
+          for pkg in v1-interactions v2-request-evals v2-response-evals; do
+            grep -qE "[[:space:]]${pkg}/" <<<"$LISTING" || { echo "::error::archive is missing ${pkg}/ at its root"; exit 1; }
+          done
+
+      - name: Generate checksums
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum "hiddenlayer-apim-${TAG}-bicep.zip" | tee bicep-checksums.txt
+
+      - name: Sign artifacts
+        uses: ./.github/actions/sign-blobs
+        with:
+          working-directory: dist
+          patterns: hiddenlayer-apim-*-bicep.zip bicep-checksums.txt
+
+      - name: Upload assets to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.create_draft.outputs.release_id }}
+          UPLOAD_URL: ${{ needs.create_draft.outputs.upload_url }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Per-job asset list — the only block that differs between platform jobs.
+          FILES=(
+            "hiddenlayer-apim-$TAG-bicep.zip"
+            "bicep-checksums.txt"
+            "hiddenlayer-apim-$TAG-bicep.zip.sigstore.json"
+            "bicep-checksums.txt.sigstore.json"
+          )
+
+          DRAFT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID" --jq .draft) || exit 1
+          if [[ "$DRAFT" != "true" ]]; then
+            echo "::error::Release $RELEASE_ID is no longer a draft; refusing to upload assets."
+            exit 1
+          fi
+
+          # upload_url is an RFC 6570 template ending in {?name,label}; drop the template suffix.
+          UPLOAD_URL="${UPLOAD_URL%%\{*}"
+
+          cd dist
+
+          for f in "${FILES[@]}"; do
+            if [[ ! -e "$f" ]]; then
+              echo "::error::Expected asset dist/$f not found."
+              exit 1
+            fi
+
+            # Re-runs of this job must be idempotent: the upload API rejects a duplicate
+            # asset name, so remove any leftover from a previous attempt first.
+            STALE_IDS=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID/assets" --paginate \
+              | jq -r --arg f "$f" '.[] | select(.name==$f) | .id') || exit 1
+            while IFS= read -r id; do
+              [[ -n "$id" ]] || continue
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/$id"
+              echo "deleted stale asset id $id ($f)"
+            done <<<"$STALE_IDS"
+
+            ENC=$(jq -rn --arg n "$f" '$n|@uri')
+
+            echo "uploading $f"
+            curl --fail-with-body --retry 3 \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              "$UPLOAD_URL?name=$ENC" \
+              --data-binary @"$f"
+            echo
+          done
+
+          echo "uploaded ${#FILES[@]} assets to draft release $RELEASE_ID ($TAG)"
+
+  publish:
+    name: Publish release
+    runs-on: ubuntu-24.04
+    needs: [create_draft, release_linux, release_macos, release_windows, release_bicep]
+    environment: release
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ needs.create_draft.outputs.release_id }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Assert release pipeline is validated
+        env:
+          RELEASE_PIPELINE_VALIDATED: ${{ vars.RELEASE_PIPELINE_VALIDATED }}
+        run: |
+          set -euo pipefail
+
+          if [ "${RELEASE_PIPELINE_VALIDATED:-}" != "true" ]; then
+            echo "::error::publishing blocked: repository variable RELEASE_PIPELINE_VALIDATED is not set to 'true'"
+            cat <<EOF
+          ================================================================
+            First-run guard: release pipeline not yet validated
+          ================================================================
+          This is intentional, not a failure of the build.
+
+          Everything up to publishing has succeeded. The draft release for
+          ${TAG} is complete and inspectable right now:
+
+            https://github.com/${GITHUB_REPOSITORY}/releases
+
+          A human must verify one release candidate end-to-end before this
+          workflow is allowed to publish anything:
+
+            1. Open the draft release above and confirm the asset inventory,
+               checksums and sigstore bundles are all present and correct.
+            2. Download an rc artifact on each platform and confirm it
+               installs, runs, and verifies against its signature.
+            3. Once satisfied, set the repository variable:
+                 Settings -> Secrets and variables -> Actions -> Variables
+                 RELEASE_PIPELINE_VALIDATED = true
+               (or: gh variable set RELEASE_PIPELINE_VALIDATED --body true \\
+                      --repo ${GITHUB_REPOSITORY})
+            4. Re-run this job via "Re-run failed jobs".
+
+          Until that variable is set, publishing stops here by design.
+          The draft is left untouched so it can be inspected or deleted.
+          ================================================================
+          EOF
+            exit 1
+          fi
+
+          echo "RELEASE_PIPELINE_VALIDATED=true; proceeding to publish ${TAG}"
+
+      - name: Assert release is still a draft
+        run: |
+          set -euo pipefail
+
+          draft=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq .draft)
+
+          if [ "$draft" != "true" ]; then
+            echo "::error::release ${RELEASE_ID} (${TAG}) is not a draft (.draft=${draft}); refusing to republish"
+            exit 1
+          fi
+
+          echo "release ${RELEASE_ID} (${TAG}) is still a draft"
+
+      - name: Assert full asset inventory
+        run: |
+          set -euo pipefail
+
+          base=(
+            "hiddenlayer-apim-${TAG}-linux-amd64.tar.gz"
+            "hiddenlayer-apim-${TAG}-linux-arm64.tar.gz"
+            "hiddenlayer-apim-${TAG}-darwin-universal.pkg"
+            "hiddenlayer-apim-${TAG}-darwin-universal.tar.gz"
+            "hiddenlayer-apim-${TAG}-windows-amd64.zip"
+            "hiddenlayer-apim-${TAG}-bicep.zip"
+            "linux-checksums.txt"
+            "darwin-checksums.txt"
+            "windows-checksums.txt"
+            "bicep-checksums.txt"
+          )
+
+          # every artifact ships alongside its sigstore bundle
+          expected=()
+          for name in "${base[@]}"; do
+            expected+=("$name" "${name}.sigstore.json")
+          done
+
+          expected_list=$(printf '%s\n' "${expected[@]}" | sort)
+
+          # the paginated assets endpoint, not the release object's embedded array (that truncates)
+          actual_list=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" --paginate --jq '.[].name' | sort)
+
+          if ! diff -u --label expected --label actual \
+               <(printf '%s\n' "$expected_list") <(printf '%s\n' "$actual_list"); then
+            echo "---- expected (${#expected[@]}) ----"
+            printf '%s\n' "$expected_list"
+            echo "---- actual ----"
+            printf '%s\n' "$actual_list"
+            echo "::error::asset inventory mismatch"
+            exit 1
+          fi
+
+          echo "asset inventory OK: ${#expected[@]} assets present on release ${RELEASE_ID}"
+
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+
+          if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+               -f tag_name="$TAG" --jq .body > notes.md; then
+            echo "::error::failed to generate release notes for ${TAG}"
+            rm -f notes.md
+            exit 1
+          fi
+
+          if [ ! -s notes.md ]; then
+            echo "::error::generated release notes for ${TAG} are empty"
+            exit 1
+          fi
+
+          echo "generated notes.md ($(wc -c < notes.md) bytes)"
+
+      - name: Set release body
+        run: |
+          set -euo pipefail
+
+          if [ ! -s notes.md ]; then
+            echo "::error::notes.md is missing or empty; cannot set release body"
+            exit 1
+          fi
+
+          # --rawfile + --input avoids the -F body=@file form, which differs across gh versions
+          returned_id=$(jq -n --rawfile body notes.md '{body: $body}' \
+            | gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --input - --jq .id)
+
+          if [ "$returned_id" != "$RELEASE_ID" ]; then
+            echo "::error::body update returned release id '${returned_id}', expected '${RELEASE_ID}'"
+            exit 1
+          fi
+
+          echo "release body set on ${RELEASE_ID}"
+
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+
+          response=$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false)
+
+          draft=$(printf '%s' "$response" | jq -r .draft)
+          html_url=$(printf '%s' "$response" | jq -r .html_url)
+
+          if [ "$draft" != "false" ]; then
+            echo "::error::release ${RELEASE_ID} (${TAG}) is still a draft after publish (.draft=${draft})"
+            exit 1
+          fi
+
+          if [ -z "$html_url" ] || [ "$html_url" = "null" ]; then
+            echo "::error::published release ${RELEASE_ID} returned no html_url"
+            exit 1
+          fi
+
+          echo "published ${TAG}: ${html_url}"

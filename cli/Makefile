@@ -36,30 +36,3 @@ test:
 
 lint:
 	golangci-lint run
-
-# Cross-compilation targets
-.PHONY: build-all build-linux build-darwin build-windows
-
-build-all: build-linux build-darwin build-windows
-
-build-linux:
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/hiddenlayer-apim-linux-amd64 .
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/hiddenlayer-apim-linux-arm64 .
-
-build-darwin:
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/hiddenlayer-apim-darwin-amd64 .
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/hiddenlayer-apim-darwin-arm64 .
-
-build-windows:
-	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o dist/hiddenlayer-apim-windows-amd64.exe .
-
-# Release target (creates checksums)
-.PHONY: release
-release: build-all
-	cd dist && \
-		tar -czf "hiddenlayer-apim-$(VERSION)-linux-amd64.tar.gz" hiddenlayer-apim-linux-amd64 && \
-		tar -czf "hiddenlayer-apim-$(VERSION)-linux-arm64.tar.gz" hiddenlayer-apim-linux-arm64 && \
-		tar -czf "hiddenlayer-apim-$(VERSION)-darwin-amd64.tar.gz" hiddenlayer-apim-darwin-amd64 && \
-		tar -czf "hiddenlayer-apim-$(VERSION)-darwin-arm64.tar.gz" hiddenlayer-apim-darwin-arm64 && \
-		zip -q "hiddenlayer-apim-$(VERSION)-windows-amd64.zip" hiddenlayer-apim-windows-amd64.exe
-	cd dist && sha256sum "hiddenlayer-apim-$(VERSION)-"*.tar.gz "hiddenlayer-apim-$(VERSION)-"*.zip > checksums.txt
